@@ -530,25 +530,32 @@ async function fetchIGN(b,capPx,onProg,prev){
     cols=Math.ceil(wM/cov[1]);rows=Math.ceil(hM/cov[1]);
     const f=Math.min(1,capPx/Math.max(cols,rows));cols=Math.max(4,Math.round(cols*f));rows=Math.max(4,Math.round(rows*f));
     grid=new Float32Array(cols*rows).fill(NaN);
-    const CH=600;for(let y0=0;y0<rows;y0+=CH)for(let x0=0;x0<cols;x0+=CH)jobs.push([x0,y0,Math.min(cols,x0+CH),Math.min(rows,y0+CH)]);
+    const CH=400;for(let y0=0;y0<rows;y0+=CH)for(let x0=0;x0<cols;x0+=CH)jobs.push([x0,y0,Math.min(cols,x0+CH),Math.min(rows,y0+CH)]);
   }
-  const faltan=[],dLon=b.east-b.west,dLat=b.north-b.south;let k=0,done=0,fails=0;
+  const faltan=[],dLon=b.east-b.west,dLat=b.north-b.south;let k=0,done=0,fails=0,activos=0,bien=0;
   async function worker(){
-    while(k<jobs.length){
-      const [x0,y0,x1,y1]=jobs[k++],cw=x1-x0,ch=y1-y0;
+    while(k<jobs.length||activos){
+      if(k>=jobs.length){await new Promise(r=>setTimeout(r,150));continue;}
+      const [x0,y0,x1,y1]=jobs[k++],cw=x1-x0,ch=y1-y0;activos++;
       const url=ignURL(cov[0],b.west+x0/cols*dLon,b.north-y1/rows*dLat,b.west+x1/cols*dLon,b.north-y0/rows*dLat,cw,ch);
       let ok=false;
       for(let a=0;a<2&&!ok;a++){
         try{const part=parseAsc(await ignGet(url),cw,ch);
           for(let r=0;r<ch;r++)grid.set(part.subarray(r*cw,(r+1)*cw),(y0+r)*cols+x0);ok=true;}catch{}
       }
-      if(!ok){fails++;faltan.push([x0,y0,x1,y1]);}
-      done++;onProg&&onProg(done,jobs.length,cov[2]);
+      if(ok)bien++;
+      if(!ok){
+        // bloque que falla: en 4 más pequeños, mientras sea mayor de 100 píxeles
+        if(cw>100||ch>100){const mx=x0+Math.ceil(cw/2),my=y0+Math.ceil(ch/2);
+          jobs.push(...[[x0,y0,mx,my],[mx,y0,x1,my],[x0,my,mx,y1],[mx,my,x1,y1]].filter(j=>j[2]>j[0]&&j[3]>j[1]));}
+        else{fails++;faltan.push([x0,y0,x1,y1]);}
+      }
+      activos--;done++;onProg&&onProg(done,jobs.length,cov[2]);
     }
   }
   onProg&&onProg(0,jobs.length,cov[2]);
   await Promise.all(Array.from({length:6},worker));
-  if(fails===jobs.length&&!prev)throw new Error('no respondió');
+  if(!prev&&!bien)throw new Error('no respondió');
   return {cols,rows,grid,cov,fails,faltan,resM:wM/cols};
 }
 /* ---------- MDT02 (2 m) desde las hojas del CNIG ----------
@@ -758,30 +765,78 @@ const TIPOS={
 const RANK={principales:0,sin:1,todas:2};
 const COLOR={principales:['#0a2a78','#1f6bff'],sin:['#0d2f80','#3f8cff'],todas:['#123a86','#8ab8ff']};
 
-async function fetchStreets(b,areaKm2){
+/* ---------- Descargas por trozos ----------
+   Cada parte se pide en trozos de tamaño moderado. Si un trozo falla (o el servidor corta la respuesta
+   por tiempo), se parte en 4 y se piden esos, hasta dos veces. Lo que siga fallando queda apuntado
+   para «Reintentar». No se usan trozos diminutos desde el principio: Overpass limita las peticiones seguidas. */
+function trocear(b,maxKm2){
+  const cos=Math.cos((b.north+b.south)/2*Math.PI/180),wk=(b.east-b.west)*111.32*cos,hk=(b.north-b.south)*110.57;
+  const n=Math.max(1,Math.ceil(Math.sqrt(wk*hk/maxKm2))),nx=Math.max(1,Math.round(n*Math.sqrt(wk/hk)||1)),ny=Math.max(1,Math.ceil(n*n/nx));
+  const out=[];
+  for(let j=0;j<ny;j++)for(let i=0;i<nx;i++)out.push({south:b.south+(b.north-b.south)*j/ny,north:b.south+(b.north-b.south)*(j+1)/ny,
+    west:b.west+(b.east-b.west)*i/nx,east:b.west+(b.east-b.west)*(i+1)/nx});
+  return out;
+}
+const partir4=b=>{const la=(b.north+b.south)/2,lo=(b.east+b.west)/2;
+  return [{south:b.south,north:la,west:b.west,east:lo},{south:b.south,north:la,west:lo,east:b.east},{south:la,north:b.north,west:b.west,east:lo},{south:la,north:b.north,west:lo,east:b.east}];};
+async function fetchConTiempo(url,ms){
+  const ac=new AbortController(),t=setTimeout(()=>ac.abort(),ms);
+  try{return await fetch(url,{signal:ac.signal});}
+  catch(e){throw ac.signal.aborted?new Error('tardó demasiado'):e;}
+  finally{clearTimeout(t);}
+}
+let overpassSig=0;
+async function overpassTrozo(consulta,bb){
+  const caja=`(${bb.south},${bb.west},${bb.north},${bb.east})`,q=consulta(caja);let last;
+  for(let a=0;a<OVERPASS.length;a++){
+    const ep=OVERPASS[(overpassSig+a)%OVERPASS.length];
+    try{
+      const r=await fetchConTiempo(ep+'?data='+encodeURIComponent(q),80000);
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      const j=await r.json();
+      // si se le acaba el tiempo o la memoria, Overpass responde «bien» pero con los datos cortados
+      if(j.remark&&/error|timed out|timeout|memory/i.test(j.remark))throw new Error('respuesta incompleta');
+      return j;
+    }catch(e){last=e;overpassSig=(overpassSig+a+1)%OVERPASS.length;}
+  }
+  throw last||new Error('Overpass no responde');
+}
+async function overpassPorPartes(b,consulta,maxKm2,onProg,prev){
+  const els=prev?prev.els:new Map();
+  const cola=prev?prev.faltan.map(bb=>({bb,nivel:2})):trocear(b,maxKm2).map(bb=>({bb,nivel:0}));
+  const faltan=[];let hechos=0,total=cola.length,lastErr=null,activos=0;
+  onProg&&onProg(0,total);
+  async function worker(){
+    while(cola.length||activos){
+      if(!cola.length){await new Promise(r=>setTimeout(r,200));continue;}
+      const q=cola.shift();activos++;
+      try{const j=await overpassTrozo(consulta,q.bb);for(const el of j.elements||[])els.set(el.type+el.id,el);}
+      catch(e){lastErr=e;
+        if(q.nivel<2&&!prev){cola.push(...partir4(q.bb).map(bb=>({bb,nivel:q.nivel+1})));total+=4;}
+        else if(prev&&q.nivel<4){cola.push(...partir4(q.bb).map(bb=>({bb,nivel:q.nivel+1})));total+=4;}   // al reintentar, un poco más pequeños
+        else faltan.push(q.bb);}
+      activos--;hechos++;onProg&&onProg(hechos,total);
+    }
+  }
+  await Promise.all([worker(),worker()]);   // dos a la vez: lo que admite Overpass sin castigar
+  if(!els.size&&faltan.length)throw lastErr||new Error('Overpass no responde');
+  return {els,faltan};
+}
+async function fetchStreets(b,areaKm2,onProg,prev){
   // En zonas enormes limitamos para no pedir cientos de MB
   let filtro='["highway"]',nota='';
   if(areaKm2>1500){filtro='["highway"~"^(motorway|trunk|primary|secondary|tertiary)(_link)?$"]';nota='Zona muy grande: solo se han cargado carreteras principales.';}
   else if(areaKm2>150){filtro='["highway"]["highway"!~"^(footway|path|track|steps|cycleway|bridleway|service|corridor|proposed|construction)$"]';nota='Zona grande: se han omitido caminos, sendas y vías de servicio.';}
-  const q=`[out:json][timeout:90];way${filtro}(${b.south},${b.west},${b.north},${b.east});out tags geom;`;
-  let lastErr;
-  for(const ep of OVERPASS){
-    try{
-      const r=await fetch(ep+'?data='+encodeURIComponent(q));
-      if(!r.ok)throw new Error('HTTP '+r.status);
-      const j=await r.json();
-      const out=[];
-      for(const el of j.elements||[]){
-        if(!el.geometry)continue;
-        const t=el.tags||{},tipo=TIPOS[t.highway];if(!tipo)continue;
-        out.push({name:t.name||t.ref||'',ref:t.ref||'',hw:t.highway,tipo,
-          puente:!!t.bridge&&t.bridge!=='no',tunel:!!t.tunnel&&!['no','building_passage'].includes(t.tunnel),
-          ll:el.geometry.map(p=>[p.lat,p.lon])});
-      }
-      return {list:out,nota};
-    }catch(e){lastErr=e;}
+  const ov=await overpassPorPartes(b,bb=>`[out:json][timeout:60];way${filtro}${bb};out tags geom;`,areaKm2>150?60:12,onProg,prev);
+  const out=[];
+  for(const el of ov.els.values()){
+    if(!el.geometry)continue;
+    const t=el.tags||{},tipo=TIPOS[t.highway];if(!tipo)continue;
+    out.push({name:t.name||t.ref||'',ref:t.ref||'',hw:t.highway,tipo,
+      puente:!!t.bridge&&t.bridge!=='no',tunel:!!t.tunnel&&!['no','building_passage'].includes(t.tunnel),
+      ll:el.geometry.map(p=>[p.lat,p.lon])});
   }
-  throw lastErr||new Error('Overpass no responde');
+  return {list:out,nota,ov,faltan:ov.faltan.length};
 }
 function prepareStreets(){
   // Pasa a coordenadas u,v y crea un índice espacial para buscar la calle bajo el cursor
@@ -852,8 +907,8 @@ function fallos(E){
   if(R.dem&&R.dem.fails)f.push('alturas');
   if(E.useIGN&&R.ign&&(R.ign.err||R.ign.fails))f.push('ign');
   if(!R.sat||!R.sat.ss||R.sat.ss.fails)f.push('sat');
-  if(R.calles&&R.calles.err)f.push('calles');
-  if(R.usos&&R.usos.err)f.push('usos');
+  if(R.calles&&(R.calles.err||R.calles.faltan))f.push('calles');
+  if(R.usos&&(R.usos.err||R.usos.faltan))f.push('usos');
   if(R.cat&&((R.cat.err&&location.protocol!=='file:')||R.cat.fails))f.push('catastro');
   if((R.wide&&R.wide.err)||(R.cob&&R.cob.err))f.push('cuencas');
   return f;
@@ -873,11 +928,12 @@ async function descargar(E,solo){
   };
   const track=(key,name)=>(d,n,extra)=>{prog[key]={name:extra?`${name} ${extra}`:name,d,n};showProg();};
   const tareas=[];
-  const fin=(key,name)=>()=>{prog[key]={name,d:1,n:1};showProg();};
-  if(quiere('calles')){prog.calles={name:'calles',d:0,n:0};
-    tareas.push(fetchStreets(b,areaKm2).catch(e=>({err:e})).then(r=>{R.calles=r;fin('calles','calles')();}));}
-  if(quiere('usos')){prog.usos={name:'edificios y usos',d:0,n:0};
-    tareas.push((areaKm2<=LAND_MAX_KM2?fetchLand(b).catch(e=>({err:e})):Promise.resolve({skip:true})).then(r=>{R.usos=r;fin('usos','edificios y usos')();}));}
+  if(quiere('calles')){
+    const prev=R.calles&&R.calles.ov?R.calles.ov:null;
+    tareas.push(fetchStreets(b,areaKm2,track('calles','calles'),prev).catch(e=>({err:e})).then(r=>{R.calles=r;}));}
+  if(quiere('usos')){
+    const prev=R.usos&&R.usos.ov?R.usos.ov:null;
+    tareas.push((areaKm2<=LAND_MAX_KM2?fetchLand(b,track('usos','edificios y usos'),prev).catch(e=>({err:e})):Promise.resolve({skip:true})).then(r=>{R.usos=r;}));}
   if(quiere('catastro')&&enEspana(b)&&areaKm2<=CAT_MAX_KM2){
     const prev=R.cat&&!R.cat.err?R.cat:null;
     tareas.push(fetchCatastro(b,track('cat','edificios del Catastro'),prev).catch(e=>({err:e})).then(r=>{R.cat=r;}));}
@@ -963,12 +1019,12 @@ async function montar(E,primera){
   // Calles y usos del suelo
   const rs=R.calles;
   if(rs.err){streets=[];streetIdx=null;aviso.push('No se pudieron cargar las calles (el servidor de OpenStreetMap no respondió).');}
-  else{streets=rs.list;if(rs.nota)aviso.push(rs.nota);prepareStreets();}
+  else{streets=rs.list;if(rs.nota)aviso.push(rs.nota);if(rs.faltan)aviso.push(`Faltaron ${rs.faltan} trozos de las calles.`);prepareStreets();}
   drawStreets2D();
   const rl=R.usos;
   if(rl.skip){landData=null;aviso.push(`Zona de más de ${LAND_MAX_KM2} km²: la simulación de lluvia no distingue edificios ni usos del suelo.`);}
   else if(rl.err){landData=null;aviso.push('No se pudieron cargar edificios y usos del suelo; la simulación los tratará como terreno sin clasificar.');}
-  else landData={...rl,items:rl.items.slice()};          // copia: el Catastro sustituye los edificios sin tocar lo descargado
+  else{landData={...rl,items:rl.items.slice()};if(rl.faltan)aviso.push(`Faltaron ${rl.faltan} trozos de edificios y usos del suelo.`);}          // copia: el Catastro sustituye los edificios sin tocar lo descargado
   if(R.cat){
     const rc=R.cat;
     if(rc.err)aviso.push(location.protocol==='file:'?'Los edificios del Catastro solo se cargan con el visor en tu web (necesita catastro.php); se usan los de OpenStreetMap.'
@@ -1304,19 +1360,13 @@ function tamPaso(t){
   if(!(d>0)){const w=num(t.width),h=num(t.height);if(w>0)d=h>0?Math.sqrt(w*h*4/Math.PI):w;}
   return d>0.2&&d<30?d:(PASO_D[t.waterway]||1);
 }
-async function fetchLand(b){
-  const bb=`(${b.south},${b.west},${b.north},${b.east})`;
-  const q=`[out:json][timeout:120];(way["building"]${bb};way["landuse"]${bb};relation["landuse"]${bb};`+
+async function fetchLand(b,onProg,prev){
+  const ov=await overpassPorPartes(b,bb=>`[out:json][timeout:60];(way["building"]${bb};way["landuse"]${bb};relation["landuse"]${bb};`+
     `way["leisure"~"^(park|garden|pitch|playground|golf_course|recreation_ground)$"]${bb};relation["leisure"="park"]${bb};`+
     `way["natural"~"^(water|wood|scrub|heath|grassland|sand|beach|wetland)$"]${bb};relation["natural"~"^(water|wood|wetland|scrub|sand|beach)$"]${bb};`+
-    `way["waterway"]${bb};way["amenity"="parking"]${bb};node["natural"="tree"]${bb};way["natural"="tree_row"]${bb};);out tags geom;`;
-  let lastErr;
-  for(const ep of OVERPASS){
-    try{
-      const r=await fetch(ep+'?data='+encodeURIComponent(q));
-      if(!r.ok)throw new Error('HTTP '+r.status);
-      const j=await r.json(),items=[],trees=[];let nEdif=0;
-      for(const el of j.elements||[]){
+    `way["waterway"]${bb};way["amenity"="parking"]${bb};node["natural"="tree"]${bb};way["natural"="tree_row"]${bb};);out tags geom;`,4,onProg,prev);
+  const items=[],trees=[];let nEdif=0;
+  for(const el of ov.els.values()){
         const tg=el.tags||{};
         // árboles sueltos e hileras de árboles (para la cámara de calle)
         if(el.type==='node'){if(tg.natural==='tree')trees.push([el.lat,el.lon]);continue;}
@@ -1339,11 +1389,8 @@ async function fetchLand(b){
           id:el.id,alt:k.c===CL.EDIF?alturaEdif(t):0,
           nom:k.c===CL.EDIF?(t.name||(t['addr:street']?t['addr:street']+(t['addr:housenumber']?' '+t['addr:housenumber']:''):'')):''});
       }
-      items.sort((a,b)=>PAINT_ORDER[a.c]+(a.line?.5:0)-(PAINT_ORDER[b.c]+(b.line?.5:0)));
-      return {items,nEdif,trees};
-    }catch(e){lastErr=e;}
-  }
-  throw lastErr||new Error('Overpass no responde');
+  items.sort((a,b)=>PAINT_ORDER[a.c]+(a.line?.5:0)-(PAINT_ORDER[b.c]+(b.line?.5:0)));
+  return {items,nEdif,trees,ov,faltan:ov.faltan.length};
 }
 
 /* ---------- Estado de la simulación ---------- */
@@ -1714,25 +1761,30 @@ async function fetchCatastro(b,onProg,prev){
   let jobs=[];for(let y=Y0;y<Y1;y+=T)for(let x=X0;x<X1;x+=T)jobs.push([x,y,Math.min(X1,x+T),Math.min(Y1,y+T)]);
   const total=jobs.length;if(prev)jobs=prev.faltan.slice();   // reintento: solo los cuadros que faltaron
   const urlDe=(bb,t)=>{const q=`z=${srs}&bbox=${bb.map(v=>v.toFixed(1)).join(',')}${t?'&t=building':''}`;return 'catastro.php?'+q;};
-  let k=0,done=0,fails=0,lastErr=null;const partes=prev?prev.partes:[],vistos=new Set(partes.map(p=>p.id||p.ring[0].join(','))),faltan=[];
+  let k=0,done=0,fails=0,bien=0,activos=0,lastErr=null;const partes=prev?prev.partes:[],vistos=new Set(partes.map(p=>p.id||p.ring[0].join(','))),faltan=[];
   onProg&&onProg(0,jobs.length);
   async function worker(){
-    while(k<jobs.length){
-      const bb=jobs[k++];let ok=false;
+    while(k<jobs.length||activos){
+      if(k>=jobs.length){await new Promise(r=>setTimeout(r,150));continue;}
+      const bb=jobs[k++];let ok=false,no404=true;activos++;
       for(const t of [false,true]){
         try{
           const r=await fetch(urlDe(bb,t));if(!r.ok)throw new Error('HTTP '+r.status);
           const res=leerGMLCatastro(await r.text(),zona);
           for(const p of res.out){const key=p.id||p.ring[0].join(',');if(vistos.has(key))continue;vistos.add(key);partes.push(p);}
           ok=true;break;
-        }catch(e){lastErr=e;if(String(e.message).startsWith('HTTP 404'))break;}
+        }catch(e){lastErr=e;if(String(e.message).startsWith('HTTP 404')){no404=false;break;}}
       }
-      if(!ok){fails++;faltan.push(bb);}
-      done++;onProg&&onProg(done,jobs.length);
+      if(ok)bien++;
+      else if(no404&&bb[2]-bb[0]>200){   // cuadro que falla: en 4 más pequeños (el Catastro limita lo que da de una vez)
+        const mx=(bb[0]+bb[2])/2,my=(bb[1]+bb[3])/2;
+        jobs.push([bb[0],bb[1],mx,my],[mx,bb[1],bb[2],my],[bb[0],my,mx,bb[3]],[mx,my,bb[2],bb[3]]);
+      }else{fails++;faltan.push(bb);}
+      activos--;done++;onProg&&onProg(done,jobs.length);
     }
   }
   await Promise.all(Array.from({length:4},worker));
-  if(fails===jobs.length&&!prev)throw lastErr||new Error('sin respuesta');
+  if(!bien&&!prev)throw lastErr||new Error('sin respuesta');
   return {partes,fails,faltan,tiles:total};
 }
 /* Sustituye los edificios de OpenStreetMap por los del Catastro */
