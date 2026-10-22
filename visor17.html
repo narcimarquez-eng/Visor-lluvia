@@ -160,7 +160,7 @@ input[type=checkbox]{accent-color:var(--accent)}
       <option value="global">Solo global (~30 m)</option>
     </select></label>
   <span class="hdr-opt" title="Hojas del MDT02 (2 m) descargadas del Centro de Descargas del CNIG">MDT02
-    <input type="file" id="mdt02" accept=".tif,.tiff,image/tiff" multiple hidden>
+    <input type="file" id="mdt02" multiple hidden>
     <button type="button" id="mdt02btn">Cargar hojas…</button><span id="mdt02info"></span>
     <button type="button" id="mdt02quitar" hidden title="Dejar de usar el MDT02">✕</button></span>
   <label class="hdr-opt">Resolución
@@ -539,22 +539,39 @@ async function fetchIGN(b,capPx,onProg){
 /* ---------- MDT02 (2 m) desde las hojas del CNIG ----------
    El servicio del IGN no da el MDT02, pero el Centro de Descargas del CNIG lo ofrece por hojas del MTN25
    en COG (GeoTIFF por bloques). El usuario las descarga y las abre aquí: solo se lee el trozo de la zona. */
-const GEOTIFF_JS='https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js',MDT02_MAX=4000;
-let mdt02=[];
-function cargarGeoTIFF(){
-  if(window.GeoTIFF)return Promise.resolve();
-  return new Promise((ok,ko)=>{const sc=document.createElement('script');sc.src=GEOTIFF_JS;sc.onload=ok;
-    sc.onerror=()=>ko(new Error('no se pudo cargar la librería para leer GeoTIFF'));document.head.appendChild(sc);});
+const GEOTIFF_JS='https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js',FFLATE_JS='https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js',MDT02_MAX=4000;
+function cargarScript(url,global){
+  if(window[global])return Promise.resolve();
+  return new Promise((ok,ko)=>{const sc=document.createElement('script');sc.src=url;sc.onload=ok;
+    sc.onerror=()=>ko(new Error('no se pudo descargar una librería necesaria (¿sin conexión?)'));document.head.appendChild(sc);});
 }
+/* Los .zip del CNIG: se sacan las hojas .tif que lleven dentro */
+async function deZip(file){
+  await cargarScript(FFLATE_JS,'fflate');
+  const buf=new Uint8Array(await file.arrayBuffer());
+  const out=fflate.unzipSync(buf,{filter:f=>/\.tiff?$/i.test(f.name)});
+  return Object.entries(out).map(([n,d])=>new File([d],n.split('/').pop(),{type:'image/tiff'}));
+}
+/* Huso UTM a partir del nombre de la hoja (MDT02-ETRS89-HU29-..., MDT02-ETRS89-H30-...) */
+const husoDeNombre=n=>{const m=/[-_]H[U]?(2[789]|3[01])[-_]/i.exec(n);return m?+m[1]:0;};
+let mdt02=[];
+function cargarGeoTIFF(){return cargarScript(GEOTIFF_JS,'GeoTIFF');}
 async function abrirMDT02(file){
-  const tiff=await GeoTIFF.fromBlob(file),img=await tiff.getImage(),gk=img.getGeoKeys()||{};
+  let tiff,img;
+  try{tiff=await GeoTIFF.fromBlob(file);img=await tiff.getImage();}
+  catch(e){throw new Error(`${file.name}: no es un GeoTIFF que se pueda leer (${e.message})`);}
+  const gk=img.getGeoKeys()||{};
   let zona=0,geo=false;const pc=gk.ProjectedCSTypeGeoKey;
-  if(pc){
-    if((pc>=25828&&pc<=25831)||(pc>=32628&&pc<=32631))zona=pc%100;   // ETRS89 / WGS84 UTM
-    else if(pc===4083)zona=28;                                         // REGCAN95 UTM 28 (Canarias)
-    else throw new Error(`${file.name}: sistema de coordenadas EPSG:${pc} no admitido`);
-  }else if([4258,4326,4081].includes(gk.GeographicTypeGeoKey)||gk.GTModelTypeGeoKey===2)geo=true;
-  else throw new Error(`${file.name}: no se reconoce su sistema de coordenadas`);
+  const cit=String(gk.GTCitationGeoKey||gk.PCSCitationGeoKey||''),mz=/UTM\s*zone\s*(2[789]|3[01])/i.exec(cit);
+  if(pc&&((pc>=25828&&pc<=25831)||(pc>=32628&&pc<=32631)))zona=pc%100;   // ETRS89 / WGS84 UTM
+  else if(pc===4083)zona=28;                                               // REGCAN95 UTM 28 (Canarias)
+  else if(!pc&&([4258,4326,4081].includes(gk.GeographicTypeGeoKey)||gk.GTModelTypeGeoKey===2))geo=true;
+  else if(mz)zona=+mz[1];
+  else if(husoDeNombre(file.name))zona=husoDeNombre(file.name);          // sin código reconocible: el huso del nombre
+  else throw new Error(`${file.name}: no se reconoce su sistema de coordenadas${pc?' (EPSG:'+pc+')':''}`);
+  // probar a leer un trozo: así se ve ya si la compresión es compatible
+  try{await img.readRasters({window:[0,0,Math.min(16,img.getWidth()),Math.min(16,img.getHeight())],samples:[0]});}
+  catch(e){throw new Error(`${file.name}: no se puede descomprimir (${e.message})`);}
   const [ox,oy]=img.getOrigin(),[rx,ry]=img.getResolution(),W=img.getWidth(),H=img.getHeight(),nd=img.getGDALNoData();
   // contorno en lat/lon (para saber qué zonas cubre)
   const ll=(x,y)=>{const X=ox+x*rx,Y=oy+y*ry;return geo?[Y,X]:deUTM(X,Y,zona);};
@@ -633,21 +650,33 @@ async function rehacerConMDT02(){
   if(dd)dd.nextElementSibling.textContent=dem.fuente;
   document.getElementById('aviso').textContent=av.join(' ');
   busy('');
+  if(av.length){busy(av.join(' '));setTimeout(()=>busy(''),7000);}
 }
 document.getElementById('mdt02btn').addEventListener('click',()=>document.getElementById('mdt02').click());
 document.getElementById('mdt02').addEventListener('change',async ev=>{
-  const files=[...ev.target.files];ev.target.value='';if(!files.length)return;
-  const malos=[];
+  let files=[...ev.target.files];ev.target.value='';if(!files.length)return;
+  const malos=[];let nuevas=0;
   try{
     busy('Abriendo el MDT02…',null);await cargarGeoTIFF();
+    // los .zip se abren y se usan las hojas que lleven dentro
+    const todos=[];
     for(const f of files){
+      if(/\.zip$/i.test(f.name)){busy(`Descomprimiendo ${f.name}…`,null);await nextFrame();
+        try{const t=await deZip(f);if(!t.length)malos.push(`${f.name}: no lleva ninguna hoja .tif`);todos.push(...t);}catch(e){malos.push(`${f.name}: ${e.message}`);}}
+      else todos.push(f);
+    }
+    for(const [k,f] of todos.entries()){
       if(mdt02.some(m=>m.name===f.name&&m.size===f.size))continue;
-      try{const m=await abrirMDT02(f);m.size=f.size;mdt02.push(m);}catch(e){malos.push(e.message.includes(f.name)?e.message:`${f.name}: ${e.message}`);}
+      busy(`Abriendo ${f.name} (${k+1} de ${todos.length})…`,null);await nextFrame();
+      try{const m=await abrirMDT02(f);m.size=f.size;mdt02.push(m);nuevas++;}catch(e){malos.push(e.message.includes(f.name)?e.message:`${f.name}: ${e.message}`);}
     }
     infoMDT02();busy('');
-    if(dem)await rehacerConMDT02();
+    if(dem&&nuevas)await rehacerConMDT02();
   }catch(e){busy('');malos.push(e.message);}
-  if(malos.length)document.getElementById('aviso').textContent='MDT02 — '+malos.join(' · ');
+  if(malos.length){
+    const t='MDT02 — '+malos.join(' · ');document.getElementById('aviso').textContent=t;
+    busy(t);setTimeout(()=>busy(''),9000);              // que se vea también en el móvil
+  }else if(nuevas&&!dem){busy(`MDT02: ${nuevas} hoja${nuevas>1?'s':''} lista${nuevas>1?'s':''}. Encuadra la zona y escanea.`);setTimeout(()=>busy(''),4000);}
 });
 document.getElementById('mdt02quitar').addEventListener('click',async()=>{mdt02=[];infoMDT02();if(dem&&dem.base)await rehacerConMDT02();});
 
