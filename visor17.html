@@ -376,8 +376,11 @@ const fmt=(n,d=0)=>n.toLocaleString('es-ES',{minimumFractionDigits:d,maximumFrac
 const decode=(r,g,b)=>r*256+g+b/256-32768;
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-function loadImg(url){
-  return new Promise((res,rej)=>{const i=new Image();i.crossOrigin='anonymous';i.onload=()=>res(i);i.onerror=()=>rej(url);i.src=url;});
+/* Una tesela llega en menos de un segundo; si a los 15 s no ha llegado está atascada: se corta y se repite */
+function loadImg(url,ms=15000){
+  return new Promise((res,rej)=>{const i=new Image();i.crossOrigin='anonymous';
+    const t=setTimeout(()=>{i.onload=i.onerror=null;i.src='';rej(new Error('tardó demasiado'));},ms);
+    i.onload=()=>{clearTimeout(t);res(i);};i.onerror=()=>{clearTimeout(t);rej(new Error(url));};i.src=url;});
 }
 /* Descarga y cose teselas con cola de concurrencia y progreso */
 async function stitch(z,t,urlFn,onProg,prev){
@@ -394,8 +397,9 @@ async function stitch(z,t,urlFn,onProg,prev){
     while(k<list.length){
       const [tx,ty]=list[k++],wx=((tx%n)+n)%n;
       let ok=false;
-      for(let a=0;a<2&&!ok;a++){
-        try{const img=await loadImg(urlFn(z,wx,ty));ctx.drawImage(img,(tx-t.tx0)*TS,(ty-t.ty0)*TS);ok=true;}catch{}
+      for(let a=0;a<3&&!ok;a++){
+        // en los reintentos la dirección cambia un poco: si no, el navegador espera a la petición atascada
+        try{const u=urlFn(z,wx,ty),img=await loadImg(a?u+(u.includes('?')?'&':'?')+'_r='+a:u);ctx.drawImage(img,(tx-t.tx0)*TS,(ty-t.ty0)*TS);ok=true;}catch{}
       }
       if(!ok){fails++;faltan.push([tx,ty]);}
       done++;onProg&&onProg(done,list.length,{mal:faltan.length});
@@ -505,17 +509,21 @@ function parseAsc(txt,cw,ch){
   }
   return out;
 }
-async function ignGet(url){
-  const r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);
-  const t=await r.text();if(!/^\s*ncols/i.test(t))throw new Error('el IGN devolvió un error');
+async function ignGet(url,ms=40000){
+  const t=await fetchConTiempo(url,ms,async r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.text();});
+  if(!/^\s*ncols/i.test(t))throw new Error('el IGN devolvió un error');
   return t;
 }
 async function elegirCobertura(b){
   if(ignCov)return ignCov;
   const lo=(b.east+b.west)/2,la=(b.north+b.south)/2,d=0.0004;
   let err;
-  for(const c of IGN_COV){
-    try{await ignGet(ignURL(c[0],lo-d,la-d,lo+d,la+d,4,4));ignCov=c;return c;}catch(e){err=e;}
+  // consulta pequeña: si tarda más de 15 s se repite una vez antes de pasar al MDT de 25 m,
+  // y el de 25 m no se recuerda para la próxima vez (puede haber sido un fallo puntual)
+  for(const [k,c] of IGN_COV.entries()){
+    for(let a=0;a<2;a++){
+      try{await ignGet(ignURL(c[0],lo-d,la-d,lo+d,la+d,4,4)+(a?'&_r=1':''),15000);if(k===0)ignCov=c;return c;}catch(e){err=e;}
+    }
   }
   throw err;
 }
@@ -779,29 +787,43 @@ function trocear(b,maxKm2){
 }
 const partir4=b=>{const la=(b.north+b.south)/2,lo=(b.east+b.west)/2;
   return [{south:b.south,north:la,west:b.west,east:lo},{south:b.south,north:la,west:lo,east:b.east},{south:la,north:b.north,west:b.west,east:lo},{south:la,north:b.north,west:lo,east:b.east}];};
-async function fetchConTiempo(url,ms){
+/* Petición con límite de espera que cubre también la llegada de los datos: leer(r) se hace dentro del plazo */
+async function fetchConTiempo(url,ms,leer){
   const ac=new AbortController(),t=setTimeout(()=>ac.abort(),ms);
-  try{return await fetch(url,{signal:ac.signal});}
+  try{const r=await fetch(url,{signal:ac.signal});return leer?await leer(r):r;}
   catch(e){throw ac.signal.aborted?new Error('tardó demasiado'):e;}
   finally{clearTimeout(t);}
 }
 let overpassSig=0;
-async function overpassTrozo(consulta,bb,alRecibir){
+/* Overpass da pocos turnos a cada usuario: si dice «demasiadas peticiones» u «ocupado», insistir enseguida
+   empeora las cosas. Se espera 3, 6 y 12 s (todas las peticiones a la vez) antes de volver a intentarlo. */
+let overpassPausa=0,overpassEspera=0;
+const dormir=ms=>new Promise(r=>setTimeout(r,ms));
+async function esperarOverpass(alEsperar){
+  while(Date.now()<overpassPausa){alEsperar&&alEsperar(Math.ceil((overpassPausa-Date.now())/1000));await dormir(500);}
+  alEsperar&&alEsperar(0);
+}
+async function overpassTrozo(consulta,bb,alRecibir,alEsperar){
   const caja=`(${bb.south},${bb.west},${bb.north},${bb.east})`,q=consulta(caja),s0=overpassSig;let last;
   for(let a=0;a<OVERPASS.length;a++){
     const ep=OVERPASS[(s0+a)%OVERPASS.length];
+    await esperarOverpass(alEsperar);
     try{
-      const r=await fetchConTiempo(ep+'?data='+encodeURIComponent(q),80000);
-      if(!r.ok)throw new Error('HTTP '+r.status);
-      // se lee por partes para poder enseñar cuántos datos van llegando
-      let j;
-      if(r.body&&r.body.getReader&&alRecibir){
+      const j=await fetchConTiempo(ep+'?data='+encodeURIComponent(q),80000,async r=>{
+        if(!r.ok){
+          if([429,503,504].includes(r.status)){   // ocupado: pausa creciente para todos
+            const s=[3,6,12][Math.min(2,overpassEspera++)];overpassPausa=Math.max(overpassPausa,Date.now()+s*1000);}
+          throw new Error('HTTP '+r.status);
+        }
+        // se lee por partes para poder enseñar cuántos datos van llegando
+        if(!(r.body&&r.body.getReader&&alRecibir))return r.json();
         const rd=r.body.getReader(),dec=new TextDecoder(),tx=[];
         for(;;){const {done,value}=await rd.read();if(done)break;tx.push(dec.decode(value,{stream:true}));alRecibir(value.length);}
-        tx.push(dec.decode());j=JSON.parse(tx.join(''));
-      }else j=await r.json();
+        tx.push(dec.decode());return JSON.parse(tx.join(''));
+      });
       // si se le acaba el tiempo o la memoria, Overpass responde «bien» pero con los datos cortados
       if(j.remark&&/error|timed out|timeout|memory/i.test(j.remark))throw new Error('respuesta incompleta');
+      overpassEspera=0;   // responde bien: se vuelven a usar pausas cortas
       return j;
     }catch(e){last=e;overpassSig=(s0+a+1)%OVERPASS.length;}   // el próximo trozo empieza por el siguiente servidor
   }
@@ -811,13 +833,14 @@ async function overpassPorPartes(b,consulta,maxKm2,onProg,prev){
   const els=prev?prev.els:new Map();
   const cola=prev?prev.faltan.map(bb=>({bb,nivel:2})):trocear(b,maxKm2).map(bb=>({bb,nivel:0}));
   const faltan=[];let hechos=0,total=cola.length,lastErr=null,activos=0,bytes=0;
-  const aviso=()=>onProg&&onProg(hechos,total,{mal:faltan.length,kb:bytes/1024});
+  let espera=0;
+  const aviso=()=>onProg&&onProg(hechos,total,{mal:faltan.length,kb:bytes/1024,espera});
   aviso();
   async function worker(){
     while(cola.length||activos){
       if(!cola.length){await new Promise(r=>setTimeout(r,200));continue;}
       const q=cola.shift();activos++;
-      try{const j=await overpassTrozo(consulta,q.bb,n=>{bytes+=n;aviso();});for(const el of j.elements||[])els.set(el.type+el.id,el);}
+      try{const j=await overpassTrozo(consulta,q.bb,n=>{bytes+=n;aviso();},s=>{if(s!==espera){espera=s;aviso();}});for(const el of j.elements||[])els.set(el.type+el.id,el);}
       catch(e){lastErr=e;
         if(q.nivel<2&&!prev){cola.push(...partir4(q.bb).map(bb=>({bb,nivel:q.nivel+1})));total+=4;}
         else if(prev&&q.nivel<4){cola.push(...partir4(q.bb).map(bb=>({bb,nivel:q.nivel+1})));total+=4;}   // al reintentar, un poco más pequeños
@@ -934,7 +957,8 @@ async function descargar(E,solo){
   const txt=p=>{
     if(p.err)return `${p.name} ✗ no respondió`;
     if(p.fin)return p.mal?`${p.name} ✗ ${p.mal} trozo${p.mal>1?'s':''} sin descargar`:`${p.name} ✓`;
-    return `${p.name} ${p.n?Math.floor(p.maxF*100)+' %':'…'}`+(p.kb?` · ${kB(p.kb)}`:'')+(p.mal?` (${p.mal} sin descargar)`:'');
+    return `${p.name} ${p.n?Math.floor(p.maxF*100)+' %':'…'}`+(p.kb?` · ${kB(p.kb)}`:'')+(p.mal?` (${p.mal} sin descargar)`:'')+
+      (p.espera?` · servidor ocupado, esperando ${p.espera} s`:'');
   };
   const showProg=()=>{
     const parts=Object.values(prog);if(!parts.length)return;
@@ -946,7 +970,7 @@ async function descargar(E,solo){
   const track=(key,name)=>{parte(key,name);return (d,n,x)=>{
     const o=x&&typeof x==='object'?x:{extra:x},q=parte(key,name);
     if(o.extra)q.name=`${name} ${o.extra}`;
-    q.d=d;q.n=n;if(o.mal!=null)q.mal=o.mal;if(o.kb!=null)q.kb=o.kb;
+    q.d=d;q.n=n;if(o.mal!=null)q.mal=o.mal;if(o.kb!=null)q.kb=o.kb;if(o.espera!=null)q.espera=o.espera;
     q.maxF=Math.max(q.maxF,n?Math.min(1,d/n):0);showProg();};};
   // al terminar una parte: llegó todo, faltan trozos o no respondió
   const cerrar=(key,name,r,mal)=>{const q=parte(key,name);if(r&&r.err)q.err=true;else{q.fin=true;if(mal!=null)q.mal=mal;}showProg();return r;};
@@ -1794,8 +1818,8 @@ async function fetchCatastro(b,onProg,prev){
       const bb=jobs[k++];let ok=false,no404=true;activos++;
       for(const t of [false,true]){
         try{
-          const r=await fetch(urlDe(bb,t));if(!r.ok)throw new Error('HTTP '+r.status);
-          const res=leerGMLCatastro(await r.text(),zona);
+          const txt=await fetchConTiempo(urlDe(bb,t),40000,async r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.text();});
+          const res=leerGMLCatastro(txt,zona);
           for(const p of res.out){const key=p.id||p.ring[0].join(',');if(vistos.has(key))continue;vistos.add(key);partes.push(p);}
           ok=true;break;
         }catch(e){lastErr=e;
