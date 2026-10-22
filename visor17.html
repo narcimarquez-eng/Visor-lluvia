@@ -298,6 +298,7 @@ input[type=checkbox]{accent-color:var(--accent)}
       <canvas id="simChart" aria-label="Agua en superficie y carga del alcantarillado a lo largo del tiempo"></canvas>
       <div class="sim-row" id="exportRow">
         <label>Máximos cada <select id="maxLado"><option value="50">50 m</option><option value="100" selected>100 m</option><option value="200">200 m</option><option value="500">500 m</option></select></label>
+        <label>Imagen del 3D <select id="glbImg"><option value="vista" selected>la de la vista</option><option value="sat">satélite</option><option value="hyp">hipsométrico</option><option value="ambas">las dos (2 ficheros)</option></select></label>
         <button type="button" id="glb" disabled>Descargar 3D con el calado máximo (.glb)</button>
         <button type="button" id="maxCsv" disabled>Descargar máximos (CSV)</button>
       </div>
@@ -1209,8 +1210,8 @@ function hypsoColor(t){
   for(let i=1;i<st.length;i++)if(t<=st[i][0]){const [a,ca]=st[i-1],[b,cb]=st[i],f=(t-a)/(b-a);return ca.map((c,k)=>c+(cb[k]-c)*f);}
   return st[st.length-1][1];
 }
-function makeTexture(){
-  const mode=document.getElementById('tex').value,texMax=Math.min(Q.tex,GPU_TEX);
+function makeTexture(modo){
+  const mode=modo||document.getElementById('tex').value,texMax=Math.min(Q.tex,GPU_TEX);
   let base;
   if(mode==='sat'&&sat){base=document.createElement('canvas');base.width=sat.width;base.height=sat.height;base.getContext('2d').drawImage(sat,0,0);}
   else{
@@ -2473,10 +2474,17 @@ async function exportarGLB(){
     for(let j=0;j<gh-1;j++)for(let i=0;i<gw-1;i++){const a=j*gw+i,b=a+1,c=a+gw,d=c+1;idx.push(a,c,b,b,c,d);}
     const tg=new THREE.BufferGeometry();tg.setAttribute('position',new THREE.BufferAttribute(pos,3));tg.setAttribute('uv',new THREE.BufferAttribute(uv,2));
     tg.setIndex(idx);tg.computeVertexNormals();
-    const src=mesh.material.map.image,ks=Math.min(1,2048/Math.max(src.width,src.height)),cv=document.createElement('canvas');
-    cv.width=Math.round(src.width*ks);cv.height=Math.round(src.height*ks);cv.getContext('2d').drawImage(src,0,0,cv.width,cv.height);
-    const tx=new THREE.CanvasTexture(cv);tx.format=THREE.RGBFormat;     // RGB: se guarda en JPEG, mucho más ligero
-    const terreno=new THREE.Mesh(tg,new THREE.MeshStandardMaterial({map:tx,roughness:1,metalness:0}));terreno.name='Terreno';sc.add(terreno);
+    // imagen del terreno: la de la vista, satélite, hipsométrico o las dos (un fichero cada una)
+    const elegida=$('glbImg').value,vista=$('tex').value;
+    let modos=elegida==='vista'?[vista]:elegida==='ambas'?['sat','hyp']:[elegida];
+    const sinSat=!sat&&modos.includes('sat');if(sinSat)modos=[...new Set(modos.map(m=>m==='sat'?'hyp':m))];
+    const texDe=modo=>{
+      const src=modo===vista?mesh.material.map.image:makeTexture(modo).image;
+      const ks=Math.min(1,2048/Math.max(src.width,src.height)),cv=document.createElement('canvas');
+      cv.width=Math.round(src.width*ks);cv.height=Math.round(src.height*ks);cv.getContext('2d').drawImage(src,0,0,cv.width,cv.height);
+      const tx=new THREE.CanvasTexture(cv);tx.format=THREE.RGBFormat;     // RGB: se guarda en JPEG, mucho más ligero
+      return tx;};
+    const terreno=new THREE.Mesh(tg,new THREE.MeshStandardMaterial({roughness:1,metalness:0}));terreno.name='Terreno';sc.add(terreno);
     // edificios
     const ge=geoEdificios(1,exag,1);
     if(ge){const m=new THREE.Mesh(ge,new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.9,metalness:0}));m.name='Edificios';sc.add(m);}
@@ -2524,10 +2532,18 @@ async function exportarGLB(){
     }
     sc.userData={generador:'Visor de lluvia',origen_lat:+la0.toFixed(6),origen_lon:+lo0.toFixed(6),unidades:'metros; X este, Y arriba, Z sur',
       exageracion_vertical:exag,cota_y0_m:+dem.min.toFixed(2),alturas:dem.fuente,lluvia:SP.forma==='real'?'episodio real':`${SP.I} mm/h durante ${SP.dur} min`};
-    busy('Generando el fichero .glb…',null);await nextFrame();
-    const glb=await new Promise((ok,ko)=>{try{new THREE.GLTFExporter().parse(sc,ok,{binary:true,maxTextureSize:2048});}catch(e){ko(e);}});
-    download(new Blob([glb],{type:'model/gltf-binary'}),'calado_maximo.glb');
-    busy(`Descargado calado_maximo.glb (${fmt(glb.byteLength/1048576,1)} MB)`+(S&&S.t>0?` · ${L.length} máximos por zonas`:' · sin agua: simula primero')+(exag!==1?` · exageración vertical ×${fmt(exag,1)}`:''));
+    const NOM={sat:'satelite',hyp:'hipsometrico'},hechos=[];
+    for(const [k,modo] of modos.entries()){
+      busy(`Generando el fichero .glb${modos.length>1?` (${k+1} de ${modos.length})`:''}…`,null);await nextFrame();
+      if(terreno.material.map)terreno.material.map.dispose();
+      terreno.material.map=texDe(modo);terreno.material.needsUpdate=true;
+      sc.userData.imagen=modo==='sat'?'satélite':'hipsométrico';
+      const glb=await new Promise((ok,ko)=>{try{new THREE.GLTFExporter().parse(sc,ok,{binary:true,maxTextureSize:2048});}catch(e){ko(e);}});
+      const nombre=`calado_maximo_${NOM[modo]}.glb`;
+      download(new Blob([glb],{type:'model/gltf-binary'}),nombre);hechos.push(`${nombre} (${fmt(glb.byteLength/1048576,1)} MB)`);
+      if(k<modos.length-1)await new Promise(r=>setTimeout(r,1200));   // separar las descargas: algunos navegadores bloquean dos seguidas
+    }
+    busy(`Descargado ${hechos.join(' y ')}`+(sinSat?' · no hay imagen satélite, solo hipsométrico':'')+(S&&S.t>0?` · ${L.length} máximos por zonas`:' · sin agua: simula primero')+(exag!==1?` · exageración vertical ×${fmt(exag,1)}`:''));
     setTimeout(()=>busy(''),5000);
   }catch(e){busy('No se pudo generar el 3D: '+e.message);setTimeout(()=>busy(''),6000);}
 }
