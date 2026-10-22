@@ -275,6 +275,7 @@ input[type=checkbox]{accent-color:var(--accent)}
         <label>Alcantarillado <input type="range" id="sRed" min="0" max="100" value="25"><output id="oRed">25 mm/h</output></label>
         <label>Carreteras fuera del pueblo <select id="sCarr"><option value="cunetas" selected>desaguan por cunetas</option><option value="imbornales">tienen imbornales</option></select></label>
         <label>Hondonadas <select id="sHond"><option value="c05">buscan salida cortando hasta 0,5 m</option><option value="c1" selected>buscan salida cortando hasta 1 m</option><option value="c3">buscan salida cortando hasta 3 m</option><option value="balsa">se llenan como balsas</option><option value="nada">terreno tal cual, sin ningún retoque</option></select></label>
+        <label>Garajes y sótanos <select id="sGar"><option value="tapar" selected>rampas tapadas: el agua pasa por encima</option><option value="entra">el agua entra en ellos</option></select></label>
         <label>Tejados <select id="sTej"><option value="calle">vierten a la calle</option><option value="red" selected>van a la red</option></select></label>
       </div>
       <div class="simrow">
@@ -304,6 +305,7 @@ input[type=checkbox]{accent-color:var(--accent)}
           <li><b>Hondonadas.</b> Un modelo del terreno tiene pozos que en la calle no existen: pasos bajo la calzada, cunetas, alcantarillas de paso o ruido de la medición. Con «el agua busca salida», cada hondonada se conecta con el punto más bajo cercano que tenga salida rebajando el camino lo justo, hasta el corte que elijas: 1 m por defecto (en ciudad basta; 3 m para terraplenes de carretera con obras de drenaje). Por esos pasos el agua va más despacio. Las hondonadas más profundas se respetan. El agua siempre se mide sobre el terreno original, no sobre el fondo del paso. Los patios rodeados de edificios desaguan por bajantes, como los tejados.</li>
           <li><b>Puentes, túneles y alcantarillas.</b> Las vías que OpenStreetMap marca como puente o túnel no se pintan sobre el terreno: el agua pasa por debajo del puente o por encima del túnel. Las alcantarillas y cauces soterrados de OpenStreetMap unen su entrada y su salida por debajo; donde un cauce cruza una vía sin puente se supone una alcantarilla (del tamaño típico del cauce: arroyo Ø 1,2 m, acequia 0,6 m, canal 2 m, río 3 m, o el que diga OpenStreetMap), y donde una hondonada solo tiene salida atravesando una carretera, un paso de Ø 1 m. La carretera no se rebaja: la alcantarilla traga según el agua que tiene delante y, si llega más de la que cabe, el agua sube y pasa por encima de la vía. En el mapa: gris seca, azul corre agua, naranja llena, rojo desbordada.</li>
           <li><b>Resolución.</b> El MDT más fino que da el servicio del IGN es el de 5 m. Para 2 m, descarga del Centro de Descargas del CNIG (centrodedescargas.cnig.es) las hojas del MDT02 de tu zona y ábrelas con «MDT02 · Cargar hojas…»: se usan en todos los escaneos que caigan dentro, y fuera de ellas se sigue usando el de 5 m. Cada celda toma la cota media del MDT que cae dentro de ella. Con «cada celda, un píxel del MDT» la rejilla llega a esos 5 m aunque la zona sea grande (hasta unos 3 millones de celdas; tarda más). Con celdas grandes se pierden pasos estrechos entre edificios y pueden salir balsas que no existen: por eso las sendas y aceras del casco se abren siempre entre los edificios.</li>
+          <li><b>Garajes y sótanos.</b> El MDT del IGN es el terreno sin edificios, pero conserva las rampas de garaje, los sótanos y los patios hundidos, que salen como hondonadas de 1 a 3 m junto a las casas. Las hondonadas de menos de 500 m² pegadas a un edificio, que no son calle, carretera ni cauce, se consideran rampas de garaje o sótanos: por defecto se tapan (en la realidad tienen badén y rejilla) y el agua pasa por encima; con «el agua entra» se dejan abiertas y se cuenta cuántas reciben agua. Necesita los edificios de OpenStreetMap o del Catastro.</li>
           <li><b>¿Balsa real o inventada?</b> La vista «Hondonadas reales y retoques del terreno» y la información al pasar el dedo dicen en cada punto si el agua está en una hondonada del terreno real, si el modelo ha rebajado el terreno para darle salida o si lo ha subido un poco en un llano. Con «Hondonadas: terreno tal cual» no se retoca nada.</li>
           <li><b>Llanos.</b> Donde el MDT da la misma cota en varias celdas seguidas, la calle real tiene una pendiente que el modelo no ve (las calles se hacen con al menos un 0,5 %). Se da a esos llanos una pendiente mínima del 0,3 % hacia su salida más baja, sin subir nunca el terreno más de 10 cm (menos que un bordillo), para que con muy poca agua ésta siga su camino. El agua que se muestra se mide siempre sobre el terreno real.</li>
           <li><b>Imbornales.</b> Además de los repartidos cada cierta distancia, que se colocan en el punto más bajo cercano de la calle, se pone uno en cada punto bajo de la calzada.</li>
@@ -1446,7 +1448,7 @@ async function fetchLand(b,onProg,prev){
 let S=null,simRunning=false,simRAF=0,waterMesh=null,waterTex=null,imbPoints=null,critGroup=null;
 const imbUserAdd=new Set(),imbUserDel=new Set();
 const $=id=>document.getElementById(id);
-const SP={mar:0,real:null,I:45,dur:45,forma:'pico',esp:30,Qi:10,red:25,tej:'red',vel:0,ver:'d',det:400,hond:'c1',carr:'cunetas',ext:'si',p0:20,p0u:5,p0m:35,p0a:30};
+const SP={gar:'tapar',mar:0,real:null,I:45,dur:45,forma:'pico',esp:30,Qi:10,red:25,tej:'red',vel:0,ver:'d',det:400,hond:'c1',carr:'cunetas',ext:'si',p0:20,p0u:5,p0m:35,p0a:30};
 
 function simStop(){simRunning=false;cancelAnimationFrame(simRAF);updPlay();}
 
@@ -1477,6 +1479,9 @@ function simPrepare(){
   const z0=Float32Array.from(z);
   // Alcantarillas y cauces soterrados: unen dos puntos por debajo del terreno
   const pasos=crearPasos(Ws,Hs,dx,cls,blk,z,ras.cruces);
+  // Rampas de garaje, sótanos y patios hundidos: el MDT quita los edificios pero no lo que está bajo la rasante
+  const gar=garajes(Ws,Hs,dx,cls,blk,z0,pasos);
+  if(SP.gar==='tapar')for(const g of gar.lista)for(const i of g.cells){z0[i]+=gar.prof[i];z[i]=z0[i];}
   // Hondonadas: cada celda busca su camino hacia el punto bajo más cercano con salida
   const br=salidas(Ws,Hs,z,blk,cls,{c05:0.5,c1:1,c3:3}[SP.hond]||0,dx,pasos,SP.hond!=='nada');
   for(const P of br.pasos){const [la,lo]=uvToLatLon(((P.a%Ws+P.b%Ws)/2+.5)/Ws,(((P.a/Ws)|0)/2+((P.b/Ws)|0)/2+.5)/Hs);P.ll=[la,lo];pasos.push(P);}
@@ -1502,7 +1507,7 @@ function simPrepare(){
   let urb=0;for(let i=0;i<N;i++)if(cls[i]===CL.URB||cls[i]===CL.CALLE||cls[i]===CL.EDIF||cls[i]===CL.PATIO)urb++;
   S={Ws,Hs,N,dx,A,cls,z,z0,blk,br,dep:ras.dep,nM,inf0,roofCount,nRoof,urbArea:urb*A,
      d:new Float32Array(N),maxV:new Float32Array(N),maxDV:new Float32Array(N),qx:new Float32Array((Ws-1)*Hs),qy:new Float32Array(Ws*(Hs-1)),qxo:new Float32Array((Ws-1)*Hs),qyo:new Float32Array(Ws*(Hs-1)),outV:new Float32Array(N),maxD:new Float32Array(N),flux:new Float32Array(N),cum:new Float32Array(N),
-     acc:null,imb:[],pasos,hondo,t:0,dt:1,hist:[],crit:[],tex:new Uint8Array(N*4)};
+     acc:null,imb:[],pasos,hondo,gar,t:0,dt:1,hist:[],crit:[],tex:new Uint8Array(N*4)};
   // Mar: agua a baja cota (<1,5 m) — su nivel lo fija la marea
   S.mar=new Uint8Array(N);let nMar=0;
   for(let i=0;i<N;i++)if(cls[i]===CL.AGUA&&z0[i]<1.5){S.mar[i]=1;nMar++;}
@@ -1522,7 +1527,7 @@ function simPrepare(){
   drawImbPoints();drawEntradas();drawPasos();drawCrit();$('criticos').innerHTML='';refreshEdif();listaEdif();$('critTit').hidden=true;
   $('simPlay').disabled=false;$('simReset').disabled=false;
   paintWater();simStats();drawChart();leyenda();
-  estado(`Lista · rejilla ${Ws}×${Hs} de ${fmt(dx,1)} m (${fmt(N/1e6,N<1e6?2:1)} millones de celdas; el MDT tiene ${fmt(nat,1)} m)`+(br.nPozos?` · ${br.nPozos} hondonadas con salida`:'')+(pasos.length?` · ${pasos.length} alcantarillas y pasos`:'')+(br.nLlano*dx*dx>=500?` · ${fmt(br.nLlano*dx*dx/1e4,1)} ha de llano con pendiente mínima`:''));
+  estado(`Lista · rejilla ${Ws}×${Hs} de ${fmt(dx,1)} m (${fmt(N/1e6,N<1e6?2:1)} millones de celdas; el MDT tiene ${fmt(nat,1)} m)`+(br.nPozos?` · ${br.nPozos} hondonadas con salida`:'')+(pasos.length?` · ${pasos.length} alcantarillas y pasos`:'')+(gar.lista.length?` · ${gar.lista.length} ${gar.lista.length>1?'posibles rampas de garaje o sótanos':'posible rampa de garaje o sótano'}${SP.gar==='tapar'?(gar.lista.length>1?' tapados':' tapado'):''}`:'')+(br.nLlano*dx*dx>=500?` · ${fmt(br.nLlano*dx*dx/1e4,1)} ha de llano con pendiente mínima`:''));
 }
 function simResetState(){
   if(!S)return;
@@ -1532,6 +1537,7 @@ function simResetState(){
   S.t=0;S.dt=1;S.hist=[{t:0,surf:0,load:0,I:0}];S.crit=[];S.load=0;S.over=false;S.maxLoad=0;
   S.V={rain:0,inf:0,red:0,agua:0,out:0,ent:0};
   for(const P of S.pasos){P.q=0;P.qMax=0;P.vol=0;P.lleno=false;P.desb=false;}
+  for(const g of S.gar.lista)g.max=0;
   computeHydro();
 }
 
@@ -2080,6 +2086,31 @@ function refreshPasos(){
 }
 
 const detalle=v=>v==='mdt'?'mdt':+v;
+/* Hondonadas pequeñas pegadas a un edificio, que no son calle, carretera ni cauce: casi siempre rampas de
+   garaje, sótanos o patios hundidos. En la realidad tienen badén y rejilla y no se llenan como una balsa. */
+function garajes(Ws,Hs,dx,cls,blk,z0,pasos){
+  const N=Ws*Hs,prof=depresiones(Ws,Hs,z0,blk,cls,pasos),id=new Int32Array(N).fill(-1),lista=[],A=dx*dx;
+  const MAXA=500;   // m² (con celdas de 5 m una rampa parece mayor): más grande ya es otra cosa (paso inferior, solar, balsa)
+  for(let i0=0;i0<N;i0++){
+    if(id[i0]!==-1||prof[i0]<0.15||blk[i0])continue;
+    const cells=[],st=[i0];id[i0]=-2;let pegado=false,via=0,malo=false,mx=0;
+    while(st.length){
+      const c=st.pop();cells.push(c);const x=c%Ws,y=(c/Ws)|0;if(prof[c]>mx)mx=prof[c];
+      const k=cls[c];if(k===CL.CAUCE||k===CL.AGUA||k===CL.CUNETA)malo=true;if(k===CL.CALLE||k===CL.CARR)via++;
+      for(let dy=-1;dy<=1;dy++)for(let ox=-1;ox<=1;ox++){
+        const nx=x+ox,ny=y+dy;if(nx<0||ny<0||nx>=Ws||ny>=Hs)continue;const j=ny*Ws+nx;
+        if(cls[j]===CL.EDIF)pegado=true;
+        if((ox&&dy)||id[j]!==-1||blk[j]||prof[j]<0.15)continue;id[j]=-2;st.push(j);
+      }
+      if(cells.length*A>MAXA*1.5)malo=true;
+    }
+    const area=cells.length*A;
+    if(pegado&&!malo&&area<=MAXA&&via<=cells.length*0.5){const k=lista.length;for(const c of cells)id[c]=k;lista.push({cells,area,prof:mx,max:0});}
+    else for(const c of cells)id[c]=-3;
+  }
+  for(let i=0;i<N;i++)if(id[i]<0)id[i]=-1;
+  return {lista,id,prof};
+}
 /* Hondonadas del terreno real (antes de cualquier retoque): cuánto se llenaría cada celda hasta
    que el agua encontrara salida por el borde, el mar, un embalse o una alcantarilla */
 function depresiones(Ws,Hs,z0,blk,cls,pasos){
@@ -2527,7 +2558,8 @@ function paintWater(){
     const {z,z0,hondo}=S;
     for(let y=0;y<Hs;y++){const row=(Hs-1-y)*Ws;for(let x=0;x<Ws;x++){
       const i=y*Ws+x,o=(row+x)*4,dz=z[i]-z0[i],h=hondo[i];let c=null;
-      if(dz<-0.01)c=[217,52,43,Math.min(235,90+Math.round(-dz*300))];
+      if(S.gar.id[i]>=0)c=[240,140,26,220];
+      else if(dz<-0.01)c=[217,52,43,Math.min(235,90+Math.round(-dz*300))];
       else if(h>0.03)c=[110,40,170,Math.min(235,70+Math.round(h*250))];
       else if(dz>0.01)c=[40,190,230,Math.min(220,60+Math.round(dz*900))];
       if(!c||cls[i]===CL.AGUA){tex[o+3]=0;continue;}
@@ -2574,7 +2606,7 @@ function leyenda(){
   if(m==='d'||m==='max')L.innerHTML=`<span>1 cm</span><span class="ramp" style="background:${g(RAMP_D.slice(1))}"></span><span>1 m o más de agua</span>`;
   else if(m==='flux')L.innerHTML=`<span>poca</span><span class="ramp" style="background:${g(RAMP_F.slice(1))}"></span><span>mucha agua ha pasado por aquí</span>`;
   else if(m==='pel')L.innerHTML=[1,2,3].map(k=>`<span><span style="display:inline-block;width:12px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px;background:rgba(${PEL_COL[k].slice(0,3).join(',')},.9)"></span>${PEL_TXT[k]}</span>`).join('');
-  else if(m==='ret')L.innerHTML=[['110,40,170','hondonada real del terreno: ahí el agua se queda'],['217,52,43','el modelo rebaja el terreno (paso supuesto)'],['40,190,230','el modelo lo sube un poco (pendiente mínima en llano)']]
+  else if(m==='ret')L.innerHTML=[['110,40,170','hondonada real del terreno: ahí el agua se queda'],['240,140,26','posible rampa de garaje o sótano'],['217,52,43','el modelo rebaja el terreno (paso supuesto)'],['40,190,230','el modelo lo sube un poco (pendiente mínima en llano)']]
     .map(([c,t])=>`<span><span style="display:inline-block;width:12px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px;background:rgba(${c},.9)"></span>${t}</span>`).join('');
   else if(m==='acc')L.innerHTML=`<span>solo su lluvia</span><span class="ramp" style="background:${g(RAMP_A.slice(1))}"></span><span>recoge el agua de mucha superficie</span>`;
   else L.innerHTML='';
@@ -2672,6 +2704,7 @@ function simStats(){
     item('Peligro grave (SNCZI)',pg?fmt(pg*A/1e4,2)+' ha':'—')+
     item('Carga del alcantarillado',`${fmt(S.load*100,0)} % ${S.maxLoad>=0.999?'· se saturó':''}`)+
     item('Imbornales',`${fmt(S.imb.length)} · traga ${fmt(SP.Qi,0)} L/s c/u`)+
+    (S.gar.lista.length&&SP.gar==='entra'?item('Garajes y sótanos con agua',(()=>{let n=0,v=0;for(const g of S.gar.lista){let m=0;for(const c of g.cells){m=Math.max(m,S.maxD[c]);v+=S.d[c]*S.A;}if(m>=0.05)n++;}return `${fmt(n)} de ${fmt(S.gar.lista.length)} · ahora ${m3(v)}`;})()):'')+
     item('Alcantarillas y pasos',S.pasos.length?`${fmt(S.pasos.length)} · ${fmt(S.pasos.filter(P=>P.lleno).length)} llenas · ${fmt(S.pasos.filter(P=>P.desb).length)} con agua por encima de la vía`:'—');
 }
 function drawChart(){
@@ -2721,8 +2754,11 @@ function simTip(u,v){
   if(S.maxV[i]>0.05&&(SP.ver==='pel'||SP.ver==='max'))s+=`<br>velocidad máx. ${fmt(S.maxV[i],1)} m/s · ${PEL_TXT[peligro(S.maxD[i],S.maxV[i],S.maxDV[i])]}`;
   if(SP.ver==='acc'&&S.acc)s+=` · recoge de ${S.acc[i]<1e4?fmt(S.acc[i],0)+' m²':fmt(S.acc[i]/1e4,2)+' ha'}`;
   // ¿el agua de aquí es por el terreno real o por un retoque del modelo?
+  const gk=S.gar.id[i];
   const dz=S.z[i]-S.z0[i];
-  if(dz<-0.01)s+=`<br>terreno rebajado ${fmt(-dz*100,0)} cm por el modelo: paso supuesto hacia la salida`;
+  if(gk>=0){const g=S.gar.lista[gk];s+=`<br>posible rampa de garaje, sótano o patio hundido (${fmt(g.area,0)} m², ${fmt(g.prof,1)} m más bajo que la calle)`+
+    (SP.gar==='tapar'?': se trata como tapada, el agua pasa por encima':': el agua entra');}
+  else if(dz<-0.01)s+=`<br>terreno rebajado ${fmt(-dz*100,0)} cm por el modelo: paso supuesto hacia la salida`;
   else if(S.hondo[i]>0.03)s+=`<br>hondonada del terreno real: se llena hasta ${fmt(S.hondo[i]*100,0)} cm antes de desaguar`;
   else if(dz>0.01)s+=`<br>terreno subido ${fmt(dz*100,0)} cm por el modelo: pendiente mínima en llano`;
   return s;
@@ -3292,12 +3328,13 @@ function episodios(inc,gapH,orden){
 }
 
 $('sTej').addEventListener('change',e=>{SP.tej=e.target.value;});
+$('sGar').addEventListener('change',e=>{SP.gar=e.target.value;if(dem){busy('Preparando la simulación de lluvia…',null);nextFrame().then(()=>{simPrepare();busy('');});}});
 $('sHond').addEventListener('change',e=>{SP.hond=e.target.value;if(dem){busy('Preparando la simulación de lluvia…',null);nextFrame().then(()=>{simPrepare();busy('');});}});
 $('sVel').addEventListener('change',e=>{SP.vel=+e.target.value;});
 $('sVer').addEventListener('change',e=>{SP.ver=e.target.value;leyenda();paintWater();});
 $('sImbV').addEventListener('change',()=>{const v=imbVisible();if(imbPoints)imbPoints.visible=v;imbLayer.clearLayers();if(v)imb2D.forEach(c=>c.addTo(imbLayer));});
 $('sDet').addEventListener('change',e=>{SP.det=detalle(e.target.value);if(dem){busy('Preparando la simulación de lluvia…',null);nextFrame().then(()=>{simPrepare();busy('');});}});
-SP.hond=$('sHond').value;SP.ext=$('sExt').value;SP.carr=$('sCarr').value;SP.forma=$('sForma').value;SP.tej=$('sTej').value;SP.vel=+$('sVel').value;SP.ver=$('sVer').value;SP.det=detalle($('sDet').value);
+SP.hond=$('sHond').value;SP.gar=$('sGar').value;SP.ext=$('sExt').value;SP.carr=$('sCarr').value;SP.forma=$('sForma').value;SP.tej=$('sTej').value;SP.vel=+$('sVel').value;SP.ver=$('sVer').value;SP.det=detalle($('sDet').value);
 leyenda();drawChart();
 </script>
 <script>
