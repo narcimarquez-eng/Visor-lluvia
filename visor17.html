@@ -75,6 +75,9 @@ input[type=checkbox]{accent-color:var(--accent)}
 .stats dd{margin:0}
 #aviso{padding:6px 12px;font-size:13px;color:var(--accent);background:var(--panel);border-top:1px solid var(--line)}
 #aviso:empty{display:none}
+#mdt02falta{padding:6px 12px;font-size:13px;color:var(--muted);background:var(--panel);border-top:1px solid var(--line)}
+#mdt02falta:empty{display:none}
+#mdt02falta a{color:var(--accent)}
 #puntos{padding:8px 12px;border-top:1px solid var(--line);background:var(--panel);font-size:13px;max-height:120px;overflow:auto}
 #puntos:empty{display:none}
 #puntos .row{display:flex;flex-wrap:wrap;gap:4px 10px;justify-content:space-between}
@@ -204,6 +207,7 @@ input[type=checkbox]{accent-color:var(--accent)}
       <button id="borrar" disabled>Borrar marcas</button>
     </div>
     <div id="aviso"></div>
+    <div id="mdt02falta"></div>
     <dl class="stats" id="stats"></dl>
     <div id="puntos"></div>
     <section id="lluvia" aria-label="Simulación de lluvia">
@@ -625,12 +629,38 @@ async function aplicarMDT02(){
     fuente:`MDT02 CNIG · ${fmt(old.wM/W,1)} m/píxel`+(cubre<0.98?` (${fmt(cubre*100,0)} %; resto ${old.fuente.split(' ·')[0]})`:'')};
   return {cubre,hojas:hojas.length};
 }
+/* Hojas del MTN25 que cubren la zona (cuadrícula oficial del IGN) y cuáles faltan por cargar */
+const CNIG_MDT02='https://centrodedescargas.cnig.es/CentroDescargas/modelo-digital-terreno-mdt02-segunda-cobertura';
+async function hojasMTN25(b){
+  const u='https://www.ign.es/wms-inspire/cuadriculas?SERVICE=WFS&VERSION=1.1.0&REQUEST=GetFeature&TYPENAME=cuadricula-mtn25-oficial'+
+    `&OUTPUTFORMAT=application/json&SRSNAME=EPSG:4326&BBOX=${b.west},${b.south},${b.east},${b.north},EPSG:4326`;
+  const r=await fetch(u);if(!r.ok)throw new Error('HTTP '+r.status);
+  const j=await r.json();
+  return (j.features||[]).map(f=>{
+    const c=f.geometry.coordinates.flat(2);let la=0,lo=0;for(const [x,y] of c){lo+=x;la+=y;}
+    return {num:f.properties.numero,nom:f.properties.nombre,lat:la/c.length,lon:lo/c.length};
+  }).sort((a,b)=>a.num.localeCompare(b.num));
+}
+let hojasZona=null;
+function pintarHojasFalta(){
+  const el=document.getElementById('mdt02falta');
+  if(!hojasZona||!hojasZona.length){el.innerHTML='';return;}
+  const tiene=h=>mdt02.some(m=>h.lat>m.s&&h.lat<m.n&&h.lon>m.w&&h.lon<m.e);
+  const falta=hojasZona.filter(h=>!tiene(h));
+  if(!falta.length){el.innerHTML='';return;}
+  const n50=[...new Set(falta.map(h=>h.num.split('-')[0]))];
+  el.innerHTML=`Para tener esta zona a 2 m (MDT02) ${falta.length===hojasZona.length?'hacen falta':'faltan'} las hojas `+
+    falta.map(h=>`<b>${esc(h.num)}</b> (${esc(h.nom)})`).join(', ')+
+    `. Descárgalas del <a href="${CNIG_MDT02}" target="_blank" rel="noopener">Centro de Descargas del CNIG</a> buscando por hoja MTN50 `+
+    n50.map(n=>`<b>${esc(n)}</b>`).join(' y ')+` (los ficheros se llaman MDT02-ETRS89-HU…-${esc(falta[0].num)}-COB2) y ábrelas con «MDT02 · Cargar hojas…».`;
+}
 function avisoMDT02(r){
   if(!r)return [];
   if(!r.cubre)return [r.hojas?'Las hojas del MDT02 no tienen datos en esta zona.':'Las hojas del MDT02 cargadas no cubren esta zona; carga las de aquí o se usa el modelo de siempre.'];
   return r.cubre<0.98?[`El MDT02 cubre el ${fmt(r.cubre*100,0)} % de la zona; en el resto se usa ${dem.base.fuente.split(' ·')[0]}. Carga las hojas vecinas para cubrirla entera.`]:[];
 }
 function infoMDT02(){
+  pintarHojasFalta();
   const el=document.getElementById('mdt02info');
   el.textContent=mdt02.length?` ${mdt02.length} hoja${mdt02.length>1?'s':''}`:'';
   el.title=mdt02.map(m=>m.name).join('\n');
@@ -916,6 +946,8 @@ async function scan(){
     const ci=document.getElementById('cobInfo');
     if(ci)ci.textContent=coberturaInfo?`Tipos de suelo de las cuencas: ${coberturaInfo}`:(cuencaExt&&cuencaExt.length?'Sin mapa de tipos de suelo: las cuencas de fuera se tratan como cultivos y pastos':'');
     scanB={north:b.north,south:b.south,west:b.west,east:b.east};
+    hojasZona=null;pintarHojasFalta();
+    if(enEspana(b))hojasMTN25(b).then(h=>{hojasZona=h;pintarHojasFalta();}).catch(()=>{});
 
     if(scanRect)scanRect.remove();
     scanRect=L.rectangle([[b.south,b.west],[b.north,b.east]],{color:'#e08a4c',weight:2,fill:false,dashArray:'6 4',interactive:false}).addTo(map);
