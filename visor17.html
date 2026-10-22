@@ -291,6 +291,7 @@ input[type=checkbox]{accent-color:var(--accent)}
         <ul>
           <li><b>Terreno.</b> Cotas del MDT (IGN o global) remuestreadas a la rejilla de simulación. Las calzadas se rebajan 12 cm respecto a las aceras, como un bordillo, para que el agua corra por ellas.</li>
           <li><b>Hondonadas.</b> Un modelo del terreno tiene pozos que en la calle no existen: pasos bajo la calzada, cunetas, alcantarillas de paso o ruido de la medición. Con «el agua busca salida», cada hondonada se conecta con el punto más bajo cercano que tenga salida rebajando el camino lo justo, hasta el corte que elijas: 1 m por defecto (en ciudad basta; 3 m para terraplenes de carretera con obras de drenaje). Por esos pasos el agua va más despacio. Las hondonadas más profundas se respetan. El agua siempre se mide sobre el terreno original, no sobre el fondo del paso. Los patios rodeados de edificios desaguan por bajantes, como los tejados.</li>
+          <li><b>Puentes, túneles y alcantarillas.</b> Las vías que OpenStreetMap marca como puente o túnel no se pintan sobre el terreno: el agua pasa por debajo del puente o por encima del túnel. Las alcantarillas y cauces soterrados de OpenStreetMap unen su entrada y su salida por debajo; donde un cauce cruza una vía sin puente se supone una alcantarilla (del tamaño típico del cauce: arroyo Ø 1,2 m, acequia 0,6 m, canal 2 m, río 3 m, o el que diga OpenStreetMap), y donde una hondonada solo tiene salida atravesando una carretera, un paso de Ø 1 m. La carretera no se rebaja: la alcantarilla traga según el agua que tiene delante y, si llega más de la que cabe, el agua sube y pasa por encima de la vía. En el mapa: gris seca, azul corre agua, naranja llena, rojo desbordada.</li>
           <li><b>Llanos.</b> Donde el MDT da la misma cota en varias celdas seguidas, la calle real tiene una pendiente que el modelo no ve (las calles se hacen con al menos un 0,5 %). Se da a esos llanos una pendiente mínima del 0,3 % hacia su salida más baja, sin subir nunca el terreno más de 30 cm, para que con muy poca agua ésta siga su camino. El agua que se muestra se mide siempre sobre el terreno real.</li>
           <li><b>Imbornales.</b> Además de los repartidos cada cierta distancia, que se colocan en el punto más bajo cercano de la calle, se pone uno en cada punto bajo de la calzada.</li>
           <li><b>Edificios.</b> Salen de OpenStreetMap y el agua los rodea. El agua de sus tejados va a la red o cae a la calle más cercana, según elijas.</li>
@@ -583,6 +584,7 @@ async function fetchStreets(b,areaKm2){
         if(!el.geometry)continue;
         const t=el.tags||{},tipo=TIPOS[t.highway];if(!tipo)continue;
         out.push({name:t.name||t.ref||'',ref:t.ref||'',hw:t.highway,tipo,
+          puente:!!t.bridge&&t.bridge!=='no',tunel:!!t.tunnel&&!['no','building_passage'].includes(t.tunnel),
           ll:el.geometry.map(p=>[p.lat,p.lon])});
       }
       return {list:out,nota};
@@ -1022,7 +1024,10 @@ function landClass(t){
     if(t.waterway==='riverbank')return {c:CL.AGUA};
     // ancho (m) y profundidad del cauce (m)
     const k={river:[14,2.5],canal:[7,1.5],stream:[3,1.0],drain:[2,0.6],ditch:[2,0.6]}[t.waterway];
-    return k?{c:CL.CAUCE,line:true,w:k[0],dep:k[1]}:null;
+    if(!k)return null;
+    // tramo que pasa por debajo (alcantarilla o cauce soterrado): no es un cauce abierto
+    const tun=(t.tunnel&&t.tunnel!=='no')||t.culvert==='yes'||t.location==='underground';
+    return {c:CL.CAUCE,line:true,w:k[0],dep:k[1],tun,D:tamPaso(t)};
   }
   if(t.natural==='water'||t.natural==='wetland'||['reservoir','basin','salt_pond'].includes(t.landuse))return {c:CL.AGUA};
   if(t.natural==='sand'||t.natural==='beach')return {c:CL.ARENA};
@@ -1033,6 +1038,14 @@ function landClass(t){
      ['park','garden','pitch','playground','golf_course','recreation_ground'].includes(t.leisure)||t.natural==='grassland')return {c:CL.VERDE};
   if(['residential','commercial','industrial','retail','construction','railway','garages','education','institutional','religious'].includes(t.landuse)||t.amenity==='parking')return {c:CL.URB};
   return null;
+}
+/* Tamaño (m) del paso de una alcantarilla: diámetro (OSM lo da en mm) o ancho y alto; si no, uno típico del tipo de cauce */
+const PASO_D={river:3,canal:2,stream:1.2,drain:0.6,ditch:0.6};
+function tamPaso(t){
+  const num=v=>{const m=/([0-9]+(?:[.,][0-9]+)?)\s*(mm|cm|m)?/.exec(v||'');if(!m)return 0;const x=+m[1].replace(',','.');return m[2]==='mm'?x/1000:m[2]==='cm'?x/100:x;};
+  let d=num(t.diameter);if(d>20)d/=1000;                            // diámetro sin unidad: milímetros
+  if(!(d>0)){const w=num(t.width),h=num(t.height);if(w>0)d=h>0?Math.sqrt(w*h*4/Math.PI):w;}
+  return d>0.2&&d<30?d:(PASO_D[t.waterway]||1);
 }
 async function fetchLand(b){
   const bb=`(${b.south},${b.west},${b.north},${b.east})`;
@@ -1065,7 +1078,7 @@ async function fetchLand(b){
         if(!rings.length)continue;
         if(k.c===CL.EDIF)nEdif++;
         const t=el.tags||{};
-        items.push({c:k.c,line:!!k.line,w:k.w||0,dep:k.dep||0,rings,
+        items.push({c:k.c,line:!!k.line,w:k.w||0,dep:k.dep||0,rings,tun:!!k.tun,D:k.D||0,
           id:el.id,alt:k.c===CL.EDIF?alturaEdif(t):0,
           nom:k.c===CL.EDIF?(t.name||(t['addr:street']?t['addr:street']+(t['addr:housenumber']?' '+t['addr:housenumber']:''):'')):''});
       }
@@ -1103,8 +1116,12 @@ function simPrepare(){
     nM[i]=CL_N[cls[i]];inf0[i]=CL_INF[cls[i]]/3.6e6;       // m/s
   }
   const z0=Float32Array.from(z);
+  // Alcantarillas y cauces soterrados: unen dos puntos por debajo del terreno
+  const pasos=crearPasos(Ws,Hs,dx,cls,blk,z,ras.cruces);
   // Hondonadas: cada celda busca su camino hacia el punto bajo más cercano con salida
-  const br=salidas(Ws,Hs,z,blk,cls,{c05:0.5,c1:1,c3:3}[SP.hond]||0,dx);
+  const br=salidas(Ws,Hs,z,blk,cls,{c05:0.5,c1:1,c3:3}[SP.hond]||0,dx,pasos);
+  for(const P of br.pasos){const [la,lo]=uvToLatLon(((P.a%Ws+P.b%Ws)/2+.5)/Ws,(((P.a/Ws)|0)/2+((P.b/Ws)|0)/2+.5)/Hs);P.ll=[la,lo];pasos.push(P);}
+  acabarPasos(pasos,Ws,Hs,cls,blk,z0);
   for(let i=0;i<N;i++){
     if(br.carved[i]&&nM[i]<0.05)nM[i]=0.05;                  // por esos pasos el agua va más lenta
     if(!blk[i]&&!br.vis[i]){cls[i]=CL.PATIO;blk[i]=1;}       // patios cerrados: desaguan como los tejados
@@ -1125,7 +1142,7 @@ function simPrepare(){
   let urb=0;for(let i=0;i<N;i++)if(cls[i]===CL.URB||cls[i]===CL.CALLE||cls[i]===CL.EDIF||cls[i]===CL.PATIO)urb++;
   S={Ws,Hs,N,dx,A,cls,z,z0,blk,br,dep:ras.dep,nM,inf0,roofCount,nRoof,urbArea:urb*A,
      d:new Float32Array(N),maxV:new Float32Array(N),maxDV:new Float32Array(N),qx:new Float32Array((Ws-1)*Hs),qy:new Float32Array(Ws*(Hs-1)),qxo:new Float32Array((Ws-1)*Hs),qyo:new Float32Array(Ws*(Hs-1)),outV:new Float32Array(N),maxD:new Float32Array(N),flux:new Float32Array(N),cum:new Float32Array(N),
-     acc:null,imb:[],t:0,dt:1,hist:[],crit:[],tex:new Uint8Array(N*4)};
+     acc:null,imb:[],pasos,t:0,dt:1,hist:[],crit:[],tex:new Uint8Array(N*4)};
   // Mar: agua a baja cota (<1,5 m) — su nivel lo fija la marea
   S.mar=new Uint8Array(N);let nMar=0;
   for(let i=0;i<N;i++)if(cls[i]===CL.AGUA&&z0[i]<1.5){S.mar[i]=1;nMar++;}
@@ -1142,10 +1159,10 @@ function simPrepare(){
     waterMesh=new THREE.Mesh(mesh.geometry,new THREE.MeshBasicMaterial({map:waterTex,transparent:true,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-1,polygonOffsetUnits:-4}));
     waterMesh.renderOrder=2;scene.add(waterMesh);
   }else{waterMesh.geometry=mesh.geometry;waterMesh.material.map=waterTex;waterMesh.material.needsUpdate=true;}
-  drawImbPoints();drawEntradas();drawCrit();$('criticos').innerHTML='';refreshEdif();listaEdif();$('critTit').hidden=true;
+  drawImbPoints();drawEntradas();drawPasos();drawCrit();$('criticos').innerHTML='';refreshEdif();listaEdif();$('critTit').hidden=true;
   $('simPlay').disabled=false;$('simReset').disabled=false;
   paintWater();simStats();drawChart();leyenda();
-  estado(`Lista · rejilla ${Ws}×${Hs} de ${fmt(dx,1)} m`+(br.nPozos?` · ${br.nPozos} hondonadas con salida`:'')+(br.nLlano*dx*dx>=500?` · ${fmt(br.nLlano*dx*dx/1e4,1)} ha de llano con pendiente mínima`:''));
+  estado(`Lista · rejilla ${Ws}×${Hs} de ${fmt(dx,1)} m`+(br.nPozos?` · ${br.nPozos} hondonadas con salida`:'')+(pasos.length?` · ${pasos.length} alcantarillas y pasos`:'')+(br.nLlano*dx*dx>=500?` · ${fmt(br.nLlano*dx*dx/1e4,1)} ha de llano con pendiente mínima`:''));
 }
 function simResetState(){
   if(!S)return;
@@ -1154,6 +1171,7 @@ function simResetState(){
   if(S.edif)for(const e of S.edif){e.max=0;}S.flux.fill(0);S.cum.fill(0);
   S.t=0;S.dt=1;S.hist=[{t:0,surf:0,load:0,I:0}];S.crit=[];S.load=0;S.over=false;S.maxLoad=0;
   S.V={rain:0,inf:0,red:0,agua:0,out:0,ent:0};
+  for(const P of S.pasos){P.q=0;P.qMax=0;P.vol=0;P.lleno=false;P.desb=false;}
   computeHydro();
 }
 
@@ -1543,7 +1561,10 @@ function listaEdif(){
    cortar más de MAX_CORTE metros, la hondonada se respeta y se llena como una balsa.
    Las celdas a las que no se llega sin atravesar edificios son patios cerrados. */
 const MAX_CORTE=3,EPS_Z=0.0005,PEND_MIN=0.005,PEND_LLANO=0.003,MAX_RELLENO=0.3;
-function salidas(Ws,Hs,z,blk,cls,maxCorte,dxS){
+function salidas(Ws,Hs,z,blk,cls,maxCorte,dxS,links){
+  // las alcantarillas comunican sus dos extremos sin rebajar el terreno entre ellos
+  const ady=new Map(),pasos=[];
+  for(const P of links||[]){for(const [i,j] of [[P.a,P.b],[P.b,P.a]]){if(!ady.has(i))ady.set(i,[]);ady.get(i).push(j);}}
   const N=Ws*Hs,vis=new Uint8Array(N),par=new Int32Array(N).fill(-1),carved=new Uint8Array(N),rise=new Float32Array(N);let nLlano=0;
   const hi=new Int32Array(N),hk=new Float32Array(N);let hn=0;
   const push=(i,k)=>{let c=hn++;while(c>0){const p=(c-1)>>1;if(hk[p]<=k)break;hi[c]=hi[p];hk[c]=hk[p];c=p;}hi[c]=i;hk[c]=k;};
@@ -1570,7 +1591,14 @@ function salidas(Ws,Hs,z,blk,cls,maxCorte,dxS){
         const L=path.length,zEnd=Math.min(z[path[L-1]],z[n]-EPS_Z*L);
         let need=0;for(let k=0;k<L;k++){const g=z[n]+(zEnd-z[n])*(k+1)/L;if(z[path[k]]-g>need)need=z[path[k]]-g;}
         if(maxCorte>0&&need<=maxCorte){
-          for(let k=0;k<L;k++){const g=z[n]+(zEnd-z[n])*(k+1)/L;if(z[path[k]]>g){z[path[k]]=g;carved[path[k]]=1;}}
+          for(let k=0;k<L;k++){
+            // una carretera no se corta: se supone un paso por debajo y el terraplén sigue en su sitio
+            if(cls[path[k]]===CL.CARR){
+              let e=k;while(e+1<L&&cls[path[e+1]]===CL.CARR)e++;
+              if(e+1<L){pasos.push({a:k?path[k-1]:n,b:path[e+1],D:1,tipo:'hondonada'});k=e;continue;}
+            }
+            const g=z[n]+(zEnd-z[n])*(k+1)/L;if(z[path[k]]>g){z[path[k]]=g;carved[path[k]]=1;}
+          }
           nPozos++;if(need>maxC)maxC=need;
           push(n,z[n]);
         }else push(n,z[c]);
@@ -1588,8 +1616,99 @@ function salidas(Ws,Hs,z,blk,cls,maxCorte,dxS){
         push(n,z[n]);
       }
     }
+    const lk=ady.get(c);
+    if(lk)for(const n of lk){if(vis[n]||blk[n])continue;vis[n]=1;par[n]=c;push(n,z[n]);}
   }
-  return {vis,carved,nPozos,maxC,par,nLlano};
+  return {vis,carved,nPozos,maxC,par,nLlano,pasos};
+}
+
+/* ---------- Alcantarillas, cauces soterrados y pasos bajo la carretera ----------
+   Cada paso une una celda de entrada y una de salida por debajo del terreno, con un tamaño (m).
+   Traga como un orificio: poco con poca agua, más cuando la entrada se llena, y nunca más que la
+   diferencia de nivel entre los dos lados. El terreno entre ambos (el terraplén) no se toca, así que
+   si llega más agua de la que cabe, sube y pasa por encima de la carretera. */
+function crearPasos(Ws,Hs,dx,cls,blk,z,cruces){
+  const out=[],r=Math.max(1,Math.round(4/dx));
+  const celda=(u,v)=>{
+    if(u<0||v<0||u>1||v>1)return -1;
+    const x=Math.min(Ws-1,Math.floor(u*Ws)),y=Math.min(Hs-1,Math.floor(v*Hs));let best=-1,bz=Infinity;
+    for(let dy=-r;dy<=r;dy++)for(let ox=-r;ox<=r;ox++){
+      const nx=x+ox,ny=y+dy;if(nx<0||ny<0||nx>=Ws||ny>=Hs)continue;const j=ny*Ws+nx;
+      if(blk[j]||cls[j]===CL.CALLE||cls[j]===CL.CARR)continue;
+      if(z[j]<bz){bz=z[j];best=j;}
+    }
+    return best;
+  };
+  const add=(ua,va,ub,vb,D,tipo,ll,nom)=>{
+    const a=celda(ua,va),b=celda(ub,vb);
+    if(a<0||b<0||a===b||out.some(o=>(o.a===a&&o.b===b)||(o.a===b&&o.b===a)))return;
+    out.push({a,b,D,tipo,ll,nom});
+  };
+  if(landData)for(const it of landData.items){
+    if(!it.tun||it.c!==CL.CAUCE)continue;
+    const g=it.rings[0];if(g.length<2)continue;
+    const [ua,va]=latLonToUV(...g[0]),[ub,vb]=latLonToUV(...g[g.length-1]);
+    let L=0;for(let k=0;k<g.length-1;k++)L+=Math.hypot((g[k+1][0]-g[k][0])*110574,(g[k+1][1]-g[k][1])*111320*Math.cos(g[k][0]*Math.PI/180));
+    add(ua,va,ub,vb,it.D||1,L>80?'soterrado':'alcantarilla',g[g.length>>1],'');
+  }
+  for(const c of cruces)add(c.ua,c.va,c.ub,c.vb,c.D,'supuesta',[c.lat,c.lon],c.via);
+  return out;
+}
+/* Celdas de cada boca, sección y punto más alto entre las dos (para saber si el agua pasa por encima) */
+function acabarPasos(pasos,Ws,Hs,cls,blk,z0){
+  const boca=i=>{const x=i%Ws,y=(i/Ws)|0,o=[i];
+    for(const [nx,ny] of [[x+1,y],[x-1,y],[x,y+1],[x,y-1]]){if(nx<0||ny<0||nx>=Ws||ny>=Hs)continue;const j=ny*Ws+nx;
+      if(!blk[j]&&cls[j]!==CL.CALLE&&cls[j]!==CL.CARR)o.push(j);}
+    return o;};
+  for(const P of pasos){
+    P.ca=boca(P.a);P.cb=boca(P.b);P.Af=Math.PI*P.D*P.D/4;
+    const ax=P.a%Ws,ay=(P.a/Ws)|0,bx=P.b%Ws,by=(P.b/Ws)|0,n=Math.max(Math.abs(bx-ax),Math.abs(by-ay),1);
+    let ic=P.a;
+    for(let k=1;k<n;k++){const j=Math.round(ay+(by-ay)*k/n)*Ws+Math.round(ax+(bx-ax)*k/n);if(!blk[j]&&z0[j]>z0[ic])ic=j;}
+    P.ic=ic;P.q=0;P.qMax=0;P.vol=0;P.lleno=false;P.desb=false;
+  }
+}
+function pasarAlcantarillas(DT){
+  const {d,z,A}=S,g=9.81;
+  for(const P of S.pasos){
+    let ia=P.a,ib=P.b,ca=P.ca,cb=P.cb,Ha=z[ia]+d[ia],Hb=z[ib]+d[ib],sg=1;
+    if(Hb>Ha){[ia,ib]=[ib,ia];[ca,cb]=[cb,ca];[Ha,Hb]=[Hb,Ha];sg=-1;}
+    const h=d[ia],dH=Ha-Hb;
+    if(h<1e-3||dH<1e-4){P.q=0;continue;}
+    const D=P.D,lleno=h>=D;
+    const Q=0.6*P.Af*Math.min(1,h/D)*Math.sqrt(2*g*Math.min(dH,lleno?h-D/2:h));
+    let vol=0;for(const c of ca)vol+=d[c];vol*=A;
+    const na=ca.length,nb=cb.length;
+    const V=Math.min(Q*DT,0.5*vol,0.5*dH*A*na*nb/(na+nb));   // sin vaciar la entrada ni invertir los niveles
+    if(!(V>0)){P.q=0;continue;}
+    const f=V/vol;for(const c of ca)d[c]-=d[c]*f;
+    const add=V/(A*nb);for(const c of cb)d[c]+=add;
+    P.q=sg*V/DT;P.vol+=V;if(V/DT>P.qMax)P.qMax=V/DT;
+    if(lleno)P.lleno=true;   // la entrada queda sumergida
+  }
+  for(const P of S.pasos)if(!P.desb&&d[P.ic]>=0.03)P.desb=true;   // el agua ya pasa por encima de la vía
+}
+const PASO_COL=['#9aa7b4','#1f6bff','#e08a00','#d9342b'];
+const pasoLayer=L.layerGroup().addTo(map);let paso2D=[];
+const pasoEstado=P=>P.desb?3:P.lleno?2:P.qMax>0.001?1:0;
+function pasoTxt(P){
+  const nom={alcantarilla:'Alcantarilla (OpenStreetMap)',soterrado:'Cauce soterrado (OpenStreetMap)',
+    supuesta:'Alcantarilla supuesta: el cauce cruza '+(P.nom?esc(P.nom):'la vía')+' sin puente',hondonada:'Paso bajo la carretera supuesto (hondonada)'}[P.tipo];
+  const est=['seco','corre agua','lleno: entra menos de lo que llega','desbordado: el agua pasa por encima de la vía'][pasoEstado(P)];
+  return `${nom}<br>Ø ${fmt(P.D,1)} m · ${est}<br>caudal ahora ${fmt(Math.abs(P.q),2)} m³/s · máx. ${fmt(P.qMax,2)} m³/s`;
+}
+function drawPasos(){
+  pasoLayer.clearLayers();paso2D=[];
+  if(!S)return;
+  for(const P of S.pasos){
+    const c=L.circleMarker(P.ll,{radius:5,color:'#0b1726',weight:2,fillColor:PASO_COL[pasoEstado(P)],fillOpacity:1,bubblingMouseEvents:false})
+      .bindTooltip(()=>pasoTxt(P)).addTo(pasoLayer);
+    paso2D.push(c);
+  }
+}
+function refreshPasos(){
+  if(!S)return;
+  S.pasos.forEach((P,k)=>{const c=paso2D[k],st=pasoEstado(P);if(c&&c._st!==st){c._st=st;c.setStyle({fillColor:PASO_COL[st]});}});
 }
 
 /* Pinta cada uso del suelo en una rejilla del tamaño de la simulación */
@@ -1616,10 +1735,11 @@ function rasterClasses(Ws,Hs,dx){
     const [x,y]=toPx([la,lo]),xi=Math.min(Ws-1,Math.max(0,x|0)),yi=Math.min(Hs-1,Math.max(0,y|0));return !!urb[yi*Ws+xi];
   };
   const layers=[];
-  if(landData)for(const it of landData.items)layers.push(it);
+  if(landData)for(const it of landData.items)if(!it.tun)layers.push(it);   // los cauces soterrados no se pintan: pasan por debajo
   // Cada vía se trocea cada ~20 m: dentro del pueblo es calle (bordillo e imbornales), fuera es carretera (cunetas)
   for(const st of streets){
     if(st.tipo.cls==='todas')continue;
+    if(st.puente||st.tunel){st.urbana=false;continue;}   // puentes y túneles: el agua pasa por debajo o por encima
     const tramos=[];let cur=null;
     for(let k=0;k<st.ll.length-1;k++){
       const a=st.ll[k],b=st.ll[k+1];
@@ -1642,6 +1762,10 @@ function rasterClasses(Ws,Hs,dx){
     st.urbana=tramos.some(t=>t.u);
   }
   layers.sort((a,b)=>PAINT_ORDER[a.c]+(a.line?.5:0)-(PAINT_ORDER[b.c]+(b.line?.5:0)));
+  // Donde un cauce cruza una vía sin puente, la vía va en terraplén sobre una alcantarilla: se repinta
+  // la vía encima del cauce para que el terraplén siga ahí (el agua pasará por encima si sube mucho)
+  const cruces=crucesCauceVia(dx,urbanoEn);
+  for(const c of cruces)layers.push({c:c.urb?CL.CALLE:CL.CARR,line:true,w:c.w,rings:[c.tramo]});
   let cur=-1,curLine=null,curDep=0;
   const flush=()=>{
     if(cur<0)return;
@@ -1659,7 +1783,55 @@ function rasterClasses(Ws,Hs,dx){
     }
   }
   flush();
-  return {cls,dep};
+  return {cls,dep,cruces};
+}
+
+/* Cruces de los cauces abiertos de OpenStreetMap con vías que no van en puente ni en túnel.
+   En cada uno se supone una alcantarilla: entrada aguas arriba y salida aguas abajo, a ambos lados de la vía. */
+function crucesCauceVia(dx,urbanoEn){
+  const out=[];
+  if(!landData)return out;
+  const M=([la,lo])=>{const [u,v]=latLonToUV(la,lo);return [u*dem.wM,v*dem.hM];};
+  const caja=p=>{let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity;for(const [x,y] of p){if(x<a)a=x;if(y<b)b=y;if(x>c)c=x;if(y>d)d=y;}return [a,b,c,d];};
+  const W=[];
+  for(const it of landData.items)if(it.c===CL.CAUCE&&it.line&&!it.tun&&it.rings[0].length>1){const p=it.rings[0].map(M);W.push({it,p,bb:caja(p)});}
+  if(!W.length)return out;
+  // punto a una distancia s (m) del cruce a lo largo del cauce, hacia atrás (s<0) o hacia delante
+  const sobreCauce=(p,m,t,s)=>{
+    let k=m,f=t;
+    if(s>=0){for(;;){const [x0,y0]=p[k],[x1,y1]=p[k+1],L=Math.hypot(x1-x0,y1-y0),r=(1-f)*L;
+      if(s<=r||k+2>=p.length){const g=Math.min(1,f+(L?s/L:0));return [x0+(x1-x0)*g,y0+(y1-y0)*g];}s-=r;k++;f=0;}}
+    s=-s;for(;;){const [x0,y0]=p[k],[x1,y1]=p[k+1],L=Math.hypot(x1-x0,y1-y0),r=f*L;
+      if(s<=r||k===0){const g=Math.max(0,f-(L?s/L:0));return [x0+(x1-x0)*g,y0+(y1-y0)*g];}s-=r;k--;f=1;}
+  };
+  for(const st of streets){
+    if(st.tipo.cls==='todas'||st.puente||st.tunel)continue;
+    const q=st.ll.map(M),bq=caja(q);
+    for(const w of W){
+      const bw=w.bb;if(bw[0]>bq[2]+1||bw[2]<bq[0]-1||bw[1]>bq[3]+1||bw[3]<bq[1]-1)continue;
+      for(let k=0;k<q.length-1;k++){
+        const [ax,ay]=q[k],[bx,by]=q[k+1],rx=bx-ax,ry=by-ay;
+        for(let m=0;m<w.p.length-1;m++){
+          const [cx,cy]=w.p[m],[ex,ey]=w.p[m+1],sx=ex-cx,sy=ey-cy,den=rx*sy-ry*sx;
+          if(Math.abs(den)<1e-9)continue;
+          const t=((cx-ax)*sy-(cy-ay)*sx)/den,u=((cx-ax)*ry-(cy-ay)*rx)/den;
+          if(t<0||t>1||u<0||u>1)continue;
+          const X=ax+rx*t,Y=ay+ry*t;
+          if(out.some(o=>o.it===w.it&&Math.hypot(o.X-X,o.Y-Y)<15))continue;
+          const la=st.ll[k][0]+(st.ll[k+1][0]-st.ll[k][0])*t,lo=st.ll[k][1]+(st.ll[k+1][1]-st.ll[k][1])*t;
+          const urb=SP.carr==='imbornales'||urbanoEn([la,lo],st);
+          // el terraplén: un trozo de vía a cada lado del cruce que tapa el cauce
+          const Lr=Math.hypot(rx,ry)||1,dl=(w.it.w/2+1.5*dx+1)/Lr;
+          const pt=f=>[st.ll[k][0]+(st.ll[k+1][0]-st.ll[k][0])*f,st.ll[k][1]+(st.ll[k+1][1]-st.ll[k][1])*f];
+          const s=st.tipo.w/2+Math.max(1.5,dx)+1.5*dx;   // más allá de la calzada y la cuneta
+          const A=sobreCauce(w.p,m,u,-s),B=sobreCauce(w.p,m,u,s);
+          out.push({it:w.it,X,Y,lat:la,lon:lo,urb,w:st.tipo.w,tramo:[pt(t-dl),pt(t+dl)],D:w.it.D||1,
+            ua:A[0]/dem.wM,va:A[1]/dem.hM,ub:B[0]/dem.wM,vb:B[1]/dem.hM,via:st.name});
+        }
+      }
+    }
+  }
+  return out;
 }
 
 /* ---------- Imbornales ---------- */
@@ -1667,7 +1839,7 @@ function genImbornales(){
   if(!S)return;
   const {Ws,Hs,cls}=S,set=new Set();
   for(const st of streets){
-    if(st.tipo.cls==='todas'||!st.uv)continue;
+    if(st.tipo.cls==='todas'||!st.uv||st.puente||st.tunel)continue;
     if(!st.urbana&&SP.carr!=='imbornales')continue;             // carreteras: cunetas, no imbornales
     let acc=SP.esp/2;
     for(let k=0;k<st.uv.length-1;k++){
@@ -1758,7 +1930,7 @@ function refreshImb(){
 }
 function simOnBuild(){
   if(waterMesh){waterMesh.geometry=mesh.geometry;}
-  if(S){drawImbPoints();drawEntradas();drawCrit();}
+  if(S){drawImbPoints();drawEntradas();drawPasos();drawCrit();}
 }
 
 /* ---------- Motor ---------- */
@@ -1864,6 +2036,7 @@ function simStep(){
     q*=q>0?outV[f]:outV[f+Ws];qy[f]=q;const v=q*k;
     d[f]-=v;d[f+Ws]+=v;if(v>0)flux[f]+=v;else flux[f+Ws]-=v;
   }
+  if(S.pasos.length)pasarAlcantarillas(DT);
   // salida libre por los bordes
   for(let i=0;i<N;i++){
     let di=d[i];if(di<0){d[i]=0;continue;}
@@ -1897,9 +2070,9 @@ function simLoop(ts){
   const t0=performance.now();
   while(S.t<target&&performance.now()-t0<28){simStep();if(S.t>=endT())break;}
   paintWater();
-  if(!(simRAF%6)){refreshEdifMax();simStats();refreshImb();if(markers.length)refreshMarks();}
+  if(!(simRAF%6)){refreshEdifMax();simStats();refreshImb();refreshPasos();if(markers.length)refreshMarks();}
   if(!(simRAF%90)){refreshEdif();listaEdif();}
-  if(S.t>=endT()){simStop();refreshEdif();listaEdif();simStats();refreshImb();drawChart();findCrit();refreshMarks();estado('Terminada',false);return;}
+  if(S.t>=endT()){simStop();refreshEdif();listaEdif();simStats();refreshImb();refreshPasos();drawChart();findCrit();refreshMarks();estado('Terminada',false);return;}
   if(!(simRAF%20))drawChart();
   estado(`${horaSim(S.t)} · ${rainNow(S.t)>0?'lloviendo '+fmt(rainNow(S.t),0)+' mm/h':'ya no llueve'}`,true);
   simRAF=requestAnimationFrame(simLoop);
@@ -2090,7 +2263,8 @@ function simStats(){
     item('Arrastra coches',pc?fmt(pc*A/1e4,2)+' ha':'—')+
     item('Peligro grave (SNCZI)',pg?fmt(pg*A/1e4,2)+' ha':'—')+
     item('Carga del alcantarillado',`${fmt(S.load*100,0)} % ${S.maxLoad>=0.999?'· se saturó':''}`)+
-    item('Imbornales',`${fmt(S.imb.length)} · traga ${fmt(SP.Qi,0)} L/s c/u`);
+    item('Imbornales',`${fmt(S.imb.length)} · traga ${fmt(SP.Qi,0)} L/s c/u`)+
+    item('Alcantarillas y pasos',S.pasos.length?`${fmt(S.pasos.length)} · ${fmt(S.pasos.filter(P=>P.lleno).length)} llenas · ${fmt(S.pasos.filter(P=>P.desb).length)} con agua por encima de la vía`:'—');
 }
 function drawChart(){
   const c=$('simChart');if(!c)return;
@@ -2977,7 +3151,7 @@ function pintarSuelo(fuente){
       for(const r of it.rings){gg.beginPath();r.forEach((p,k)=>{const [x,z]=toLocal(p);k?gg.lineTo(X(x),X(z)):gg.moveTo(X(x),X(z));});gg.fillStyle=fill;gg.fill();}
       gg.globalAlpha=1;
     }
-    for(const it of landData.items)if(it.c===CL.CAUCE&&it.line)for(const r of it.rings){
+    for(const it of landData.items)if(it.c===CL.CAUCE&&it.line&&!it.tun)for(const r of it.rings){
       gg.beginPath();r.forEach((p,k)=>{const [x,z]=toLocal(p);k?gg.lineTo(X(x),X(z)):gg.moveTo(X(x),X(z));});
       gg.strokeStyle=P.tierra;gg.lineWidth=(it.w+3)*ppm;gg.stroke();gg.strokeStyle='#4b5550';gg.lineWidth=it.w*ppm;gg.stroke();}
   }
