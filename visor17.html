@@ -398,7 +398,7 @@ async function stitch(z,t,urlFn,onProg,prev){
         try{const img=await loadImg(urlFn(z,wx,ty));ctx.drawImage(img,(tx-t.tx0)*TS,(ty-t.ty0)*TS);ok=true;}catch{}
       }
       if(!ok){fails++;faltan.push([tx,ty]);}
-      done++;onProg&&onProg(done,list.length);
+      done++;onProg&&onProg(done,list.length,{mal:faltan.length});
     }
   }
   await Promise.all(Array.from({length:12},worker));
@@ -550,7 +550,7 @@ async function fetchIGN(b,capPx,onProg,prev){
           jobs.push(...[[x0,y0,mx,my],[mx,y0,x1,my],[x0,my,mx,y1],[mx,my,x1,y1]].filter(j=>j[2]>j[0]&&j[3]>j[1]));}
         else{fails++;faltan.push([x0,y0,x1,y1]);}
       }
-      activos--;done++;onProg&&onProg(done,jobs.length,cov[2]);
+      activos--;done++;onProg&&onProg(done,jobs.length,{extra:cov[2],mal:fails});
     }
   }
   onProg&&onProg(0,jobs.length,cov[2]);
@@ -786,36 +786,43 @@ async function fetchConTiempo(url,ms){
   finally{clearTimeout(t);}
 }
 let overpassSig=0;
-async function overpassTrozo(consulta,bb){
-  const caja=`(${bb.south},${bb.west},${bb.north},${bb.east})`,q=consulta(caja);let last;
+async function overpassTrozo(consulta,bb,alRecibir){
+  const caja=`(${bb.south},${bb.west},${bb.north},${bb.east})`,q=consulta(caja),s0=overpassSig;let last;
   for(let a=0;a<OVERPASS.length;a++){
-    const ep=OVERPASS[(overpassSig+a)%OVERPASS.length];
+    const ep=OVERPASS[(s0+a)%OVERPASS.length];
     try{
       const r=await fetchConTiempo(ep+'?data='+encodeURIComponent(q),80000);
       if(!r.ok)throw new Error('HTTP '+r.status);
-      const j=await r.json();
+      // se lee por partes para poder enseñar cuántos datos van llegando
+      let j;
+      if(r.body&&r.body.getReader&&alRecibir){
+        const rd=r.body.getReader(),dec=new TextDecoder(),tx=[];
+        for(;;){const {done,value}=await rd.read();if(done)break;tx.push(dec.decode(value,{stream:true}));alRecibir(value.length);}
+        tx.push(dec.decode());j=JSON.parse(tx.join(''));
+      }else j=await r.json();
       // si se le acaba el tiempo o la memoria, Overpass responde «bien» pero con los datos cortados
       if(j.remark&&/error|timed out|timeout|memory/i.test(j.remark))throw new Error('respuesta incompleta');
       return j;
-    }catch(e){last=e;overpassSig=(overpassSig+a+1)%OVERPASS.length;}
+    }catch(e){last=e;overpassSig=(s0+a+1)%OVERPASS.length;}   // el próximo trozo empieza por el siguiente servidor
   }
   throw last||new Error('Overpass no responde');
 }
 async function overpassPorPartes(b,consulta,maxKm2,onProg,prev){
   const els=prev?prev.els:new Map();
   const cola=prev?prev.faltan.map(bb=>({bb,nivel:2})):trocear(b,maxKm2).map(bb=>({bb,nivel:0}));
-  const faltan=[];let hechos=0,total=cola.length,lastErr=null,activos=0;
-  onProg&&onProg(0,total);
+  const faltan=[];let hechos=0,total=cola.length,lastErr=null,activos=0,bytes=0;
+  const aviso=()=>onProg&&onProg(hechos,total,{mal:faltan.length,kb:bytes/1024});
+  aviso();
   async function worker(){
     while(cola.length||activos){
       if(!cola.length){await new Promise(r=>setTimeout(r,200));continue;}
       const q=cola.shift();activos++;
-      try{const j=await overpassTrozo(consulta,q.bb);for(const el of j.elements||[])els.set(el.type+el.id,el);}
+      try{const j=await overpassTrozo(consulta,q.bb,n=>{bytes+=n;aviso();});for(const el of j.elements||[])els.set(el.type+el.id,el);}
       catch(e){lastErr=e;
         if(q.nivel<2&&!prev){cola.push(...partir4(q.bb).map(bb=>({bb,nivel:q.nivel+1})));total+=4;}
         else if(prev&&q.nivel<4){cola.push(...partir4(q.bb).map(bb=>({bb,nivel:q.nivel+1})));total+=4;}   // al reintentar, un poco más pequeños
         else faltan.push(q.bb);}
-      activos--;hechos++;onProg&&onProg(hechos,total);
+      activos--;hechos++;aviso();
     }
   }
   await Promise.all([worker(),worker()]);   // dos a la vez: lo que admite Overpass sin castigar
@@ -920,33 +927,51 @@ function pintarReintentar(){
 /* Descarga todo (solo=null) o solo las partes indicadas, completando lo que ya había */
 async function descargar(E,solo){
   const {b,areaKm2}=E,R=E.R,quiere=k=>!solo||solo.has(k);
-  const prog={};
-  const showProg=()=>{
-    const parts=Object.values(prog);let d=0,n=0;
-    parts.forEach(p=>{d+=p.d;n+=p.n;});
-    busy((solo?'Reintentando ':'Descargando ')+parts.map(p=>`${p.name} ${p.n?Math.round(p.d/p.n*100)+' %':'…'}`).join(' · '),n?d/n:null);
+  // Progreso: cada parte pesa lo mismo en la barra (no cuenta cuántas teselas tiene), la barra nunca
+  // retrocede aunque un trozo se parta en 4, y se distingue lo que llegó de lo que falló.
+  const prog={};let maxF=0;
+  const kB=v=>v<1024?`${fmt(v,0)} kB`:`${fmt(v/1024,1)} MB`;
+  const txt=p=>{
+    if(p.err)return `${p.name} ✗ no respondió`;
+    if(p.fin)return p.mal?`${p.name} ✗ ${p.mal} trozo${p.mal>1?'s':''} sin descargar`:`${p.name} ✓`;
+    return `${p.name} ${p.n?Math.floor(p.maxF*100)+' %':'…'}`+(p.kb?` · ${kB(p.kb)}`:'')+(p.mal?` (${p.mal} sin descargar)`:'');
   };
-  const track=(key,name)=>(d,n,extra)=>{prog[key]={name:extra?`${name} ${extra}`:name,d,n};showProg();};
+  const showProg=()=>{
+    const parts=Object.values(prog);if(!parts.length)return;
+    let f=0;for(const p of parts)f+=p.fin||p.err?1:p.maxF;f/=parts.length;
+    maxF=Math.max(maxF,f);
+    busy((solo?'Reintentando: ':'Descargando: ')+parts.map(txt).join(' · '),maxF);
+  };
+  const parte=(key,name)=>prog[key]||(prog[key]={name,d:0,n:0,kb:0,mal:0,maxF:0});
+  const track=(key,name)=>{parte(key,name);return (d,n,x)=>{
+    const o=x&&typeof x==='object'?x:{extra:x},q=parte(key,name);
+    if(o.extra)q.name=`${name} ${o.extra}`;
+    q.d=d;q.n=n;if(o.mal!=null)q.mal=o.mal;if(o.kb!=null)q.kb=o.kb;
+    q.maxF=Math.max(q.maxF,n?Math.min(1,d/n):0);showProg();};};
+  // al terminar una parte: llegó todo, faltan trozos o no respondió
+  const cerrar=(key,name,r,mal)=>{const q=parte(key,name);if(r&&r.err)q.err=true;else{q.fin=true;if(mal!=null)q.mal=mal;}showProg();return r;};
   const tareas=[];
   if(quiere('calles')){
     const prev=R.calles&&R.calles.ov?R.calles.ov:null;
-    tareas.push(fetchStreets(b,areaKm2,track('calles','calles'),prev).catch(e=>({err:e})).then(r=>{R.calles=r;}));}
+    tareas.push(fetchStreets(b,areaKm2,track('calles','calles'),prev).catch(e=>({err:e})).then(r=>{R.calles=cerrar('calles','calles',r,r.faltan);}));}
   if(quiere('usos')){
     const prev=R.usos&&R.usos.ov?R.usos.ov:null;
-    tareas.push((areaKm2<=LAND_MAX_KM2?fetchLand(b,track('usos','edificios y usos'),prev).catch(e=>({err:e})):Promise.resolve({skip:true})).then(r=>{R.usos=r;}));}
+    if(areaKm2<=LAND_MAX_KM2)tareas.push(fetchLand(b,track('usos','edificios y usos'),prev).catch(e=>({err:e})).then(r=>{R.usos=cerrar('usos','edificios y usos',r,r.faltan);}));
+    else R.usos={skip:true};}
   if(quiere('catastro')&&enEspana(b)&&areaKm2<=CAT_MAX_KM2){
     const prev=R.cat&&!R.cat.err?R.cat:null;
-    tareas.push(fetchCatastro(b,track('cat','edificios del Catastro'),prev).catch(e=>({err:e})).then(r=>{R.cat=r;}));}
+    tareas.push(fetchCatastro(b,track('cat','Catastro'),prev).catch(e=>({err:e})).then(r=>{R.cat=cerrar('cat','Catastro',r,r.fails);}));}
   if(quiere('alturas')){
     if(!R.dem){let z=DEM_MAXZ;while(z>1&&tileRange(z,b).n>Q.demTiles)z--;R.dem={z,t:tileRange(z,b)};}
     const D=R.dem;
-    tareas.push(stitch(D.z,D.t,DEM_URL,track('dem','alturas'),D.st).then(st=>{D.st=st;D.fails=st.fails;}));}
+    tareas.push(stitch(D.z,D.t,DEM_URL,track('dem','alturas'),D.st).then(st=>{D.st=st;D.fails=st.fails;cerrar('dem','alturas',st,st.fails);}));}
   if(quiere('cuencas')){
-    if(!R.wide||R.wide.err)tareas.push(fetchWide(b,track('ext','cuencas de fuera')).catch(e=>({err:e})).then(r=>{R.wide=r;}));
-    if(!R.cob||R.cob.err)tareas.push(fetchCobertura(bboxAmplio(b)).catch(e=>({err:e})).then(r=>{R.cob=r;}));}
+    if(!R.wide||R.wide.err)tareas.push(fetchWide(b,track('ext','cuencas de fuera')).catch(e=>({err:e})).then(r=>{R.wide=cerrar('ext','cuencas de fuera',r);}));
+    if(!R.cob||R.cob.err){track('suelo','tipos de suelo')(0,1);
+      tareas.push(fetchCobertura(bboxAmplio(b)).catch(e=>({err:e})).then(r=>{R.cob=cerrar('suelo','tipos de suelo',r);}));}}
   if(quiere('ign')&&E.useIGN){
     const prev=R.ign&&!R.ign.err?R.ign:null;
-    tareas.push(fetchIGN(b,Q.ign,(d,n,c)=>track('ign','MDT IGN')(d,n,c),prev).catch(e=>({err:e})).then(r=>{R.ign=r;}));}
+    tareas.push(fetchIGN(b,Q.ign,track('ign','MDT IGN'),prev).catch(e=>({err:e})).then(r=>{R.ign=cerrar('ign','MDT IGN',r,r.fails);}));}
   if(quiere('sat')){
     if(!R.sat){
       const texMax=Math.min(Q.tex,GPU_TEX);let zs=SAT_MAXZ;
@@ -955,7 +980,7 @@ async function descargar(E,solo){
       R.sat={zs,ts:tileRange(zs,b),texMax};
     }
     const S0=R.sat;
-    tareas.push(stitch(S0.zs,S0.ts,SAT_URL,track('sat','satélite'),S0.ss&&S0.ss.fails<S0.ss.total?S0.ss:null).catch(()=>null).then(ss=>{S0.ss=ss;}));}
+    tareas.push(stitch(S0.zs,S0.ts,SAT_URL,track('sat','satélite'),S0.ss&&S0.ss.fails<S0.ss.total?S0.ss:null).catch(()=>null).then(ss=>{S0.ss=ss;cerrar('sat','satélite',ss?ss:{err:true},ss&&ss.fails);}));}
   await Promise.all(tareas);
 }
 /* Con lo descargado, monta el modelo de alturas, el 3D y la simulación */
@@ -1773,14 +1798,16 @@ async function fetchCatastro(b,onProg,prev){
           const res=leerGMLCatastro(await r.text(),zona);
           for(const p of res.out){const key=p.id||p.ring[0].join(',');if(vistos.has(key))continue;vistos.add(key);partes.push(p);}
           ok=true;break;
-        }catch(e){lastErr=e;if(String(e.message).startsWith('HTTP 404')){no404=false;break;}}
+        }catch(e){lastErr=e;
+          if(String(e.message).startsWith('HTTP 404')){no404=false;break;}
+          if(e instanceof TypeError)no404=false;}   // sin conexión: partir el cuadro no sirve de nada
       }
       if(ok)bien++;
       else if(no404&&bb[2]-bb[0]>200){   // cuadro que falla: en 4 más pequeños (el Catastro limita lo que da de una vez)
         const mx=(bb[0]+bb[2])/2,my=(bb[1]+bb[3])/2;
         jobs.push([bb[0],bb[1],mx,my],[mx,bb[1],bb[2],my],[bb[0],my,mx,bb[3]],[mx,my,bb[2],bb[3]]);
       }else{fails++;faltan.push(bb);}
-      activos--;done++;onProg&&onProg(done,jobs.length);
+      activos--;done++;onProg&&onProg(done,jobs.length,{mal:fails});
     }
   }
   await Promise.all(Array.from({length:4},worker));
