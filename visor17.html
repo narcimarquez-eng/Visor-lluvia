@@ -75,6 +75,7 @@ input[type=checkbox]{accent-color:var(--accent)}
 .stats dd{margin:0}
 #aviso{padding:6px 12px;font-size:13px;color:var(--accent);background:var(--panel);border-top:1px solid var(--line)}
 #aviso:empty{display:none}
+#exportRow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0}
 #reintentarBox{background:var(--panel)}#reintentarBox:has(button[hidden]){display:none}
 #reintentar{margin:4px 12px 8px;font-size:13px}
 #mdt02falta{padding:6px 12px;font-size:13px;color:var(--muted);background:var(--panel);border-top:1px solid var(--line)}
@@ -204,6 +205,7 @@ input[type=checkbox]{accent-color:var(--accent)}
         <select id="sImbV"><option value="si" selected>Mostrar</option><option value="no">Ocultar</option></select></label>
       <label><input type="checkbox" id="curvas" checked> Curvas cada
         <select id="equi"><option>1</option><option>2</option><option>5</option><option selected>10</option><option>20</option><option>25</option><option>50</option><option>100</option></select> m</label>
+      <label><input type="checkbox" id="edif3d" checked> Edificios 3D</label>
       <button id="stl" disabled>Descargar STL</button>
       <button id="csv" disabled>Descargar cotas CSV</button>
       <button id="borrar" disabled>Borrar marcas</button>
@@ -294,6 +296,11 @@ input[type=checkbox]{accent-color:var(--accent)}
       <div class="imbleg">Imbornales: <span><i style="background:#9aa7b4"></i>seco</span><span><i style="background:#1f6bff"></i>tragando</span><span><i style="background:#d9342b"></i>colmado (le llega más de lo que traga)</span></div>
       <dl id="simStats"></dl>
       <canvas id="simChart" aria-label="Agua en superficie y carga del alcantarillado a lo largo del tiempo"></canvas>
+      <div class="sim-row" id="exportRow">
+        <label>Máximos cada <select id="maxLado"><option value="50">50 m</option><option value="100" selected>100 m</option><option value="200">200 m</option><option value="500">500 m</option></select></label>
+        <button type="button" id="glb" disabled>Descargar 3D con el calado máximo (.glb)</button>
+        <button type="button" id="maxCsv" disabled>Descargar máximos (CSV)</button>
+      </div>
       <h2 id="edifTit" hidden>Edificios con más agua en la puerta · toca uno para verlo</h2>
       <ol id="edifLista"></ol>
       <h2 id="critTit" hidden>Puntos bajos donde más agua se acumula · toca uno para verlo</h2>
@@ -1106,7 +1113,7 @@ async function montar(E,primera){
   simPrepare();
   if(primera&&typeof previsionTrasEscaneo==='function')previsionTrasEscaneo();
   document.getElementById('empty').hidden=true;
-  ['stl','csv'].forEach(id=>document.getElementById(id).disabled=false);
+  ['stl','csv','glb','maxCsv'].forEach(id=>document.getElementById(id).disabled=false);
   const nCalles=new Set(streets.filter(x=>x.name).map(x=>x.name)).size;
   document.getElementById('stats').innerHTML=
     `<div><dt>Mín</dt><dd class="num">${fmt(dem.min,1)} m</dd></div>`+
@@ -2356,7 +2363,175 @@ function refreshImb(){
 function simOnBuild(){
   if(waterMesh){waterMesh.geometry=mesh.geometry;}
   if(S){drawImbPoints();drawEntradas();drawPasos();drawCrit();}
+  verEdificios3D();
 }
+
+/* ---------- Edificios en 3D ----------
+   Huella de OpenStreetMap o del Catastro extruida hasta su altura (o una típica si no se sabe),
+   apoyada en el punto más alto del terreno bajo ella. Una sola malla para todos. */
+function geoEdificios(sx,sy,sz){
+  if(!landData||!dem)return null;
+  const P=[],Cc=[],pared=[0.91,0.89,0.85],teja=[0.73,0.40,0.29],azotea=[0.80,0.79,0.76];
+  const tri=(a,b,c,col,arriba,cx,cz)=>{
+    // orientación: tejados hacia arriba, paredes hacia fuera del edificio
+    const ux=b[0]-a[0],uy=b[1]-a[1],uz=b[2]-a[2],vx=c[0]-a[0],vy=c[1]-a[1],vz=c[2]-a[2];
+    const nx=uy*vz-uz*vy,ny=uz*vx-ux*vz,nz=ux*vy-uy*vx;
+    const fuera=arriba?ny>0:(nx*((a[0]+b[0]+c[0])/3-cx)+nz*((a[2]+b[2]+c[2])/3-cz))>0;
+    const t=fuera?[a,b,c]:[a,c,b];
+    for(const v of t){P.push(v[0]*sx,(v[1]-dem.min)*sy,v[2]*sz);Cc.push(...col);}
+  };
+  let n=0;
+  for(const it of landData.items){
+    if(it.c!==CL.EDIF)continue;const ring=it.rings[0];if(!ring||ring.length<4)continue;
+    const pts=[];
+    for(let k=0;k<ring.length-1;k++){const [u,v]=latLonToUV(ring[k][0],ring[k][1]);pts.push([u,v]);}
+    if(pts.every(([u,v])=>u<-0.02||u>1.02||v<-0.02||v>1.02))continue;
+    const xz=pts.map(([u,v])=>[(u-0.5)*dem.wM,(v-0.5)*dem.hM]);
+    const gs=pts.map(([u,v])=>hAt(Math.min(1,Math.max(0,u)),Math.min(1,Math.max(0,v))));
+    const gmax=Math.max(...gs),idn=it.id||Math.round(xz[0][0]*1000+xz[0][1]*7),hr=hash01(idn);
+    const alt=it.alt||(hr<0.1?3.6:hr<0.72?6.9:hr<0.93?10:13.2),top=gmax+alt;
+    let cx=0,cz=0;for(const [x,z] of xz){cx+=x;cz+=z;}cx/=xz.length;cz/=xz.length;
+    for(let k=0;k<xz.length;k++){
+      const [xa,za]=xz[k],[xb,zb]=xz[(k+1)%xz.length],ga=gs[k]-0.3,gb=gs[(k+1)%xz.length]-0.3;
+      tri([xa,ga,za],[xb,gb,zb],[xb,top,zb],pared,false,cx,cz);tri([xa,ga,za],[xb,top,zb],[xa,top,za],pared,false,cx,cz);
+    }
+    const tris=THREE.ShapeUtils.triangulateShape(xz.map(([x,z])=>new THREE.Vector2(x,z)),[]);
+    const col=alt<=10.6&&hr<0.6?teja:azotea;
+    for(const [a,b,c] of tris)tri([xz[a][0],top,xz[a][1]],[xz[b][0],top,xz[b][1]],[xz[c][0],top,xz[c][1]],col,true);
+    n++;
+  }
+  if(!n)return null;
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));g.setAttribute('color',new THREE.Float32BufferAttribute(Cc,3));
+  g.computeVertexNormals();
+  return g;
+}
+let edifMesh=null;
+function verEdificios3D(){
+  if(edifMesh){scene.remove(edifMesh);edifMesh.geometry.dispose();edifMesh=null;}
+  if(!$('edif3d').checked||!grid)return;
+  const g=geoEdificios(grid.s,grid.s*grid.exag,grid.s);if(!g)return;
+  edifMesh=new THREE.Mesh(g,new THREE.MeshLambertMaterial({vertexColors:true}));
+  edifMesh.renderOrder=4;scene.add(edifMesh);
+}
+$('edif3d').addEventListener('change',verEdificios3D);
+
+/* ---------- Máximos por cuadrícula: dónde, cuánto y en qué calle ---------- */
+function calleCerca(u,v){
+  const st=streetAt(u,v);if(st&&st.name)return st.name;
+  let bd=1e9,n='';
+  for(const s2 of streets){if(!s2.name||!s2.uv)continue;
+    for(let k=0;k<s2.uv.length-1;k++){
+      const [u1,v1]=s2.uv[k],[u2,v2]=s2.uv[k+1],ax=(u2-u1)*dem.wM,ay=(v2-v1)*dem.hM,px=(u-u1)*dem.wM,py=(v-v1)*dem.hM;
+      const t=Math.max(0,Math.min(1,(px*ax+py*ay)/((ax*ax+ay*ay)||1))),d=Math.hypot(px-ax*t,py-ay*t);
+      if(d<bd){bd=d;n=s2.name;}}}
+  return bd<15?n:bd<120?'cerca de '+n:'';
+}
+function maximosPorZonas(lado){
+  if(!S)return [];
+  const {Ws,Hs,maxD,cls,blk,mar,dx}=S,nx=Math.max(1,Math.round(dem.wM/lado)),ny=Math.max(1,Math.round(dem.hM/lado));
+  const best=new Map();
+  for(let i=0;i<S.N;i++){
+    const v=maxD[i];if(v<0.05||blk[i]||mar[i])continue;
+    const c=cls[i];if(c===CL.AGUA||c===CL.CAUCE||c===CL.CUNETA)continue;
+    const x=i%Ws,y=(i/Ws)|0,k=Math.min(ny-1,Math.floor(y/Hs*ny))*nx+Math.min(nx-1,Math.floor(x/Ws*nx));
+    const b=best.get(k);if(!b||v>maxD[b])best.set(k,i);
+  }
+  const out=[];
+  for(const [k,i] of best){
+    const u=(i%Ws+.5)/Ws,v=(((i/Ws)|0)+.5)/Hs,[la,lo]=uvToLatLon(u,v);
+    out.push({zona:`${String.fromCharCode(65+(k%nx)%26)}${(k%nx)>=26?Math.floor((k%nx)/26):''}${Math.floor(k/nx)+1}`,i,u,v,lat:la,lon:lo,cm:Math.round(maxD[i]*100),
+      calle:calleCerca(u,v),suelo:S.z0[i],vel:S.maxV[i],peligro:PEL_TXT[peligro(maxD[i],S.maxV[i],S.maxDV[i])]});
+  }
+  return out.sort((a,b)=>b.cm-a.cm);
+}
+const csvTxt=t=>'"'+String(t).replace(/"/g,'""')+'"';
+$('maxCsv').addEventListener('click',()=>{
+  const L=maximosPorZonas(+$('maxLado').value);
+  const rows=['zona,calado_max_cm,calle,lat,lon,cota_suelo_m,cota_agua_m,velocidad_max_m_s,peligro'];
+  for(const m of L)rows.push([m.zona,m.cm,csvTxt(m.calle),m.lat.toFixed(6),m.lon.toFixed(6),m.suelo.toFixed(2),(m.suelo+m.cm/100).toFixed(2),m.vel.toFixed(2),csvTxt(m.peligro)].join(','));
+  download(new Blob(['\ufeff'+rows.join('\n')],{type:'text/csv'}),'calado_maximo_por_zonas.csv');
+});
+
+/* ---------- Exportar a 3D (.glb) ----------
+   Terreno con la imagen (satélite o hipsométrico), edificios, la lámina de agua del calado máximo
+   coloreada como en pantalla, y un banderín por cuadrícula con el máximo: centímetros, calle y posición.
+   En metros (X este, Y arriba, Z sur) con la exageración vertical de la vista; origen en el centro de la zona. */
+async function exportarGLB(){
+  if(!dem||!mesh)return;
+  busy('Preparando el modelo 3D…',null);await nextFrame();
+  try{
+    if(!THREE.GLTFExporter)await new Promise((ok,ko)=>{const sc=document.createElement('script');
+      sc.src='https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js';sc.onload=ok;sc.onerror=()=>ko(new Error('no se pudo descargar el exportador'));document.head.appendChild(sc);});
+    const exag=grid.exag,sc=new THREE.Scene(),hY=h=>(h-dem.min)*exag;
+    const [la0,lo0]=uvToLatLon(0.5,0.5);
+    // terreno
+    const gw=Math.min(512,Math.max(64,dem.W)),gh=Math.max(2,Math.round(gw*dem.hM/dem.wM));
+    const pos=new Float32Array(gw*gh*3),uv=new Float32Array(gw*gh*2),idx=[];
+    for(let j=0;j<gh;j++)for(let i=0;i<gw;i++){const u=i/(gw-1),v=j/(gh-1),k=j*gw+i;
+      pos.set([(u-.5)*dem.wM,hY(hAt(u,v)),(v-.5)*dem.hM],k*3);uv.set([u,1-v],k*2);}
+    for(let j=0;j<gh-1;j++)for(let i=0;i<gw-1;i++){const a=j*gw+i,b=a+1,c=a+gw,d=c+1;idx.push(a,c,b,b,c,d);}
+    const tg=new THREE.BufferGeometry();tg.setAttribute('position',new THREE.BufferAttribute(pos,3));tg.setAttribute('uv',new THREE.BufferAttribute(uv,2));
+    tg.setIndex(idx);tg.computeVertexNormals();
+    const src=mesh.material.map.image,ks=Math.min(1,2048/Math.max(src.width,src.height)),cv=document.createElement('canvas');
+    cv.width=Math.round(src.width*ks);cv.height=Math.round(src.height*ks);cv.getContext('2d').drawImage(src,0,0,cv.width,cv.height);
+    const tx=new THREE.CanvasTexture(cv);tx.format=THREE.RGBFormat;     // RGB: se guarda en JPEG, mucho más ligero
+    const terreno=new THREE.Mesh(tg,new THREE.MeshStandardMaterial({map:tx,roughness:1,metalness:0}));terreno.name='Terreno';sc.add(terreno);
+    // edificios
+    const ge=geoEdificios(1,exag,1);
+    if(ge){const m=new THREE.Mesh(ge,new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.9,metalness:0}));m.name='Edificios';sc.add(m);}
+    // lámina de agua del calado máximo (cuadros a la cota que alcanzó el agua)
+    let nAgua=0,L=[];
+    if(S&&S.t>0){
+      // malla que sigue el relieve: en cada vértice, el terreno más el calado de las celdas mojadas que lo tocan
+      const {Ws,Hs,maxD,blk,cls}=S,f=Math.max(1,Math.ceil(Math.max(Ws,Hs)/400)),W2=Math.ceil(Ws/f),H2=Math.ceil(Hs/f);
+      const prof=new Float32Array(W2*H2);
+      for(let y=0;y<H2;y++)for(let x=0;x<W2;x++){let mx=0;
+        for(let b=0;b<f;b++)for(let a=0;a<f;a++){const xx=x*f+a,yy=y*f+b;if(xx>=Ws||yy>=Hs)continue;const i=yy*Ws+xx;
+          if(blk[i]||cls[i]===CL.AGUA)continue;if(maxD[i]>mx)mx=maxD[i];}
+        prof[y*W2+x]=mx>=0.01?mx:0;}
+      const VW=W2+1,VH=H2+1,vd=new Float32Array(VW*VH);
+      for(let y=0;y<H2;y++)for(let x=0;x<W2;x++){const d=prof[y*W2+x];if(!d)continue;
+        for(const k of [y*VW+x,y*VW+x+1,(y+1)*VW+x,(y+1)*VW+x+1])if(d>vd[k])vd[k]=d;}
+      const vx=x=>Math.min(1,x*f/Ws),vy=y=>Math.min(1,y*f/Hs);
+      const V=new Float32Array(VW*VH*3),Cv=new Float32Array(VW*VH*3),I=[];
+      for(let y=0;y<VH;y++)for(let x=0;x<VW;x++){const k=y*VW+x,u=vx(x),v=vy(y);
+        V.set([(u-.5)*dem.wM,hY(hAt(u,v))+vd[k]*exag+0.08,(v-.5)*dem.hM],k*3);
+        Cv.set(ramp(RAMP_D,Math.max(0.01,vd[k])).slice(0,3).map(c=>c/255),k*3);}
+      for(let y=0;y<H2;y++)for(let x=0;x<W2;x++){if(!prof[y*W2+x])continue;const a=y*VW+x,b=a+1,c=a+VW,d=c+1;I.push(a,c,b,b,c,d);nAgua++;}
+      if(nAgua){const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(V,3));g.setAttribute('color',new THREE.BufferAttribute(Cv,3));
+        g.setIndex(I);g.computeVertexNormals();
+        const m=new THREE.Mesh(g,new THREE.MeshStandardMaterial({vertexColors:true,transparent:true,opacity:0.8,roughness:0.3,metalness:0,side:THREE.DoubleSide}));m.name='Calado máximo';sc.add(m);}
+      // banderines con el máximo de cada cuadrícula
+      L=maximosPorZonas(+$('maxLado').value).slice(0,400);
+      const grupo=new THREE.Group();grupo.name='Máximos por zonas';
+      const alto=Math.max(10,Math.max(dem.wM,dem.hM)/25),ancho=alto*2.6;
+      const pinMat=new THREE.MeshStandardMaterial({color:0xd9342b,roughness:0.6,metalness:0});
+      for(const m of L){
+        const x=(m.u-.5)*dem.wM,z=(m.v-.5)*dem.hM,y0=hY(m.suelo+m.cm/100);
+        const nom=`${m.zona}: ${m.cm} cm${m.calle?' · '+m.calle:''} · ${m.lat.toFixed(5)}, ${m.lon.toFixed(5)}`;
+        const g=new THREE.Group();g.name=nom;g.userData={zona:m.zona,calado_cm:m.cm,calle:m.calle,lat:+m.lat.toFixed(6),lon:+m.lon.toFixed(6),cota_suelo_m:+m.suelo.toFixed(2),peligro:m.peligro};
+        const palo=new THREE.Mesh(new THREE.CylinderGeometry(alto*0.04,alto*0.04,alto,6),pinMat);palo.position.set(x,y0+alto/2,z);g.add(palo);
+        const c2=document.createElement('canvas');c2.width=512;c2.height=192;const gx=c2.getContext('2d');
+        gx.fillStyle='#ffffff';gx.fillRect(0,0,512,192);gx.fillStyle=m.cm>=30?'#d9342b':m.cm>=10?'#e08a00':'#1f6bff';gx.fillRect(0,0,14,192);
+        gx.fillStyle='#0b1726';gx.font='bold 64px sans-serif';gx.fillText(`${m.cm} cm`,32,68);gx.font='bold 26px sans-serif';gx.fillText(m.zona,400,40);
+        gx.font='32px sans-serif';gx.fillText((m.calle||'sin calle cerca').slice(0,28),32,118);gx.font='26px sans-serif';gx.fillStyle='#4b5560';gx.fillText(`${m.lat.toFixed(5)}, ${m.lon.toFixed(5)}`,32,166);
+        const t2=new THREE.CanvasTexture(c2);t2.format=THREE.RGBFormat;
+        const cart=new THREE.Mesh(new THREE.PlaneGeometry(ancho,ancho*192/512),new THREE.MeshBasicMaterial({map:t2,side:THREE.DoubleSide}));
+        cart.position.set(x,y0+alto+ancho*96/512,z);g.add(cart);grupo.add(g);
+      }
+      if(L.length)sc.add(grupo);
+    }
+    sc.userData={generador:'Visor de lluvia',origen_lat:+la0.toFixed(6),origen_lon:+lo0.toFixed(6),unidades:'metros; X este, Y arriba, Z sur',
+      exageracion_vertical:exag,cota_y0_m:+dem.min.toFixed(2),alturas:dem.fuente,lluvia:SP.forma==='real'?'episodio real':`${SP.I} mm/h durante ${SP.dur} min`};
+    busy('Generando el fichero .glb…',null);await nextFrame();
+    const glb=await new Promise((ok,ko)=>{try{new THREE.GLTFExporter().parse(sc,ok,{binary:true,maxTextureSize:2048});}catch(e){ko(e);}});
+    download(new Blob([glb],{type:'model/gltf-binary'}),'calado_maximo.glb');
+    busy(`Descargado calado_maximo.glb (${fmt(glb.byteLength/1048576,1)} MB)`+(S&&S.t>0?` · ${L.length} máximos por zonas`:' · sin agua: simula primero')+(exag!==1?` · exageración vertical ×${fmt(exag,1)}`:''));
+    setTimeout(()=>busy(''),5000);
+  }catch(e){busy('No se pudo generar el 3D: '+e.message);setTimeout(()=>busy(''),6000);}
+}
+$('glb').addEventListener('click',exportarGLB);
 
 /* ---------- Motor ---------- */
 function rainNow(t){
