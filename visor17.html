@@ -159,6 +159,10 @@ input[type=checkbox]{accent-color:var(--accent)}
       <option value="auto" selected>IGN en España, global fuera</option>
       <option value="global">Solo global (~30 m)</option>
     </select></label>
+  <span class="hdr-opt" title="Hojas del MDT02 (2 m) descargadas del Centro de Descargas del CNIG">MDT02
+    <input type="file" id="mdt02" accept=".tif,.tiff,image/tiff" multiple hidden>
+    <button type="button" id="mdt02btn">Cargar hojas…</button><span id="mdt02info"></span>
+    <button type="button" id="mdt02quitar" hidden title="Dejar de usar el MDT02">✕</button></span>
   <label class="hdr-opt">Resolución
     <select id="calidad">
       <option value="normal">Normal (rápida)</option>
@@ -292,7 +296,7 @@ input[type=checkbox]{accent-color:var(--accent)}
           <li><b>Terreno.</b> Cotas del MDT (IGN o global) remuestreadas a la rejilla de simulación. Las calzadas se rebajan 12 cm respecto a las aceras, como un bordillo, para que el agua corra por ellas.</li>
           <li><b>Hondonadas.</b> Un modelo del terreno tiene pozos que en la calle no existen: pasos bajo la calzada, cunetas, alcantarillas de paso o ruido de la medición. Con «el agua busca salida», cada hondonada se conecta con el punto más bajo cercano que tenga salida rebajando el camino lo justo, hasta el corte que elijas: 1 m por defecto (en ciudad basta; 3 m para terraplenes de carretera con obras de drenaje). Por esos pasos el agua va más despacio. Las hondonadas más profundas se respetan. El agua siempre se mide sobre el terreno original, no sobre el fondo del paso. Los patios rodeados de edificios desaguan por bajantes, como los tejados.</li>
           <li><b>Puentes, túneles y alcantarillas.</b> Las vías que OpenStreetMap marca como puente o túnel no se pintan sobre el terreno: el agua pasa por debajo del puente o por encima del túnel. Las alcantarillas y cauces soterrados de OpenStreetMap unen su entrada y su salida por debajo; donde un cauce cruza una vía sin puente se supone una alcantarilla (del tamaño típico del cauce: arroyo Ø 1,2 m, acequia 0,6 m, canal 2 m, río 3 m, o el que diga OpenStreetMap), y donde una hondonada solo tiene salida atravesando una carretera, un paso de Ø 1 m. La carretera no se rebaja: la alcantarilla traga según el agua que tiene delante y, si llega más de la que cabe, el agua sube y pasa por encima de la vía. En el mapa: gris seca, azul corre agua, naranja llena, rojo desbordada.</li>
-          <li><b>Resolución.</b> El MDT más fino que da el servicio del IGN es el de 5 m (el MDT02 no se puede descargar así). Cada celda toma la cota media del MDT que cae dentro de ella. Con «cada celda, un píxel del MDT» la rejilla llega a esos 5 m aunque la zona sea grande (hasta unos 3 millones de celdas; tarda más). Con celdas grandes se pierden pasos estrechos entre edificios y pueden salir balsas que no existen: por eso las sendas y aceras del casco se abren siempre entre los edificios.</li>
+          <li><b>Resolución.</b> El MDT más fino que da el servicio del IGN es el de 5 m. Para 2 m, descarga del Centro de Descargas del CNIG (centrodedescargas.cnig.es) las hojas del MDT02 de tu zona y ábrelas con «MDT02 · Cargar hojas…»: se usan en todos los escaneos que caigan dentro, y fuera de ellas se sigue usando el de 5 m. Cada celda toma la cota media del MDT que cae dentro de ella. Con «cada celda, un píxel del MDT» la rejilla llega a esos 5 m aunque la zona sea grande (hasta unos 3 millones de celdas; tarda más). Con celdas grandes se pierden pasos estrechos entre edificios y pueden salir balsas que no existen: por eso las sendas y aceras del casco se abren siempre entre los edificios.</li>
           <li><b>¿Balsa real o inventada?</b> La vista «Hondonadas reales y retoques del terreno» y la información al pasar el dedo dicen en cada punto si el agua está en una hondonada del terreno real, si el modelo ha rebajado el terreno para darle salida o si lo ha subido un poco en un llano. Con «Hondonadas: terreno tal cual» no se retoca nada.</li>
           <li><b>Llanos.</b> Donde el MDT da la misma cota en varias celdas seguidas, la calle real tiene una pendiente que el modelo no ve (las calles se hacen con al menos un 0,5 %). Se da a esos llanos una pendiente mínima del 0,3 % hacia su salida más baja, sin subir nunca el terreno más de 10 cm (menos que un bordillo), para que con muy poca agua ésta siga su camino. El agua que se muestra se mide siempre sobre el terreno real.</li>
           <li><b>Imbornales.</b> Además de los repartidos cada cierta distancia, que se colocan en el punto más bajo cercano de la calle, se pone uno en cada punto bajo de la calzada.</li>
@@ -532,6 +536,121 @@ async function fetchIGN(b,capPx,onProg){
   if(fails===jobs.length)throw new Error('no respondió');
   return {cols,rows,grid,cov,fails,resM:wM/cols};
 }
+/* ---------- MDT02 (2 m) desde las hojas del CNIG ----------
+   El servicio del IGN no da el MDT02, pero el Centro de Descargas del CNIG lo ofrece por hojas del MTN25
+   en COG (GeoTIFF por bloques). El usuario las descarga y las abre aquí: solo se lee el trozo de la zona. */
+const GEOTIFF_JS='https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js',MDT02_MAX=4000;
+let mdt02=[];
+function cargarGeoTIFF(){
+  if(window.GeoTIFF)return Promise.resolve();
+  return new Promise((ok,ko)=>{const sc=document.createElement('script');sc.src=GEOTIFF_JS;sc.onload=ok;
+    sc.onerror=()=>ko(new Error('no se pudo cargar la librería para leer GeoTIFF'));document.head.appendChild(sc);});
+}
+async function abrirMDT02(file){
+  const tiff=await GeoTIFF.fromBlob(file),img=await tiff.getImage(),gk=img.getGeoKeys()||{};
+  let zona=0,geo=false;const pc=gk.ProjectedCSTypeGeoKey;
+  if(pc){
+    if((pc>=25828&&pc<=25831)||(pc>=32628&&pc<=32631))zona=pc%100;   // ETRS89 / WGS84 UTM
+    else if(pc===4083)zona=28;                                         // REGCAN95 UTM 28 (Canarias)
+    else throw new Error(`${file.name}: sistema de coordenadas EPSG:${pc} no admitido`);
+  }else if([4258,4326,4081].includes(gk.GeographicTypeGeoKey)||gk.GTModelTypeGeoKey===2)geo=true;
+  else throw new Error(`${file.name}: no se reconoce su sistema de coordenadas`);
+  const [ox,oy]=img.getOrigin(),[rx,ry]=img.getResolution(),W=img.getWidth(),H=img.getHeight(),nd=img.getGDALNoData();
+  // contorno en lat/lon (para saber qué zonas cubre)
+  const ll=(x,y)=>{const X=ox+x*rx,Y=oy+y*ry;return geo?[Y,X]:deUTM(X,Y,zona);};
+  const c=[ll(0,0),ll(W,0),ll(0,H),ll(W,H)];
+  return {name:file.name,img,zona,geo,ox,oy,rx,ry,W,H,nd:nd==null?null:+nd,res:Math.abs(rx)*(geo?111320*Math.cos(c[0][0]*Math.PI/180):1),
+    n:Math.max(...c.map(p=>p[0])),s:Math.min(...c.map(p=>p[0])),e:Math.max(...c.map(p=>p[1])),w:Math.min(...c.map(p=>p[1]))};
+}
+/* Rellena el modelo de alturas con el MDT02 donde lo hay; el resto se queda como estaba (IGN 5 m o global) */
+async function aplicarMDT02(){
+  if(!dem||!mdt02.length)return null;
+  const old=dem.base||dem;
+  const [n,w]=[px2lat(old.Y0,old.z),px2lon(old.X0,old.z)],[sL,e]=[px2lat(old.Y0+old.Hp,old.z),px2lon(old.X0+old.Wp,old.z)];
+  const hojas=mdt02.filter(m=>m.n>sL&&m.s<n&&m.e>w&&m.w<e);
+  if(!hojas.length){if(dem.base)dem=dem.base;return {cubre:0,hojas:0};}
+  const res=Math.min(...hojas.map(m=>m.res));
+  let W=Math.round(old.wM/res),H=Math.round(old.hM/res);
+  const f=Math.min(1,MDT02_MAX/Math.max(W,H));W=Math.max(4,Math.round(W*f));H=Math.max(4,Math.round(H*f));
+  const h=new Float32Array(W*H).fill(NaN);
+  const lat=Float64Array.from({length:H},(_,j)=>px2lat(old.Y0+j/(H-1)*old.Hp,old.z));
+  const lon=Float64Array.from({length:W},(_,i)=>px2lon(old.X0+i/(W-1)*old.Wp,old.z));
+  let validos=0;
+  for(const m of hojas){
+    // coordenadas de la hoja de cada punto del modelo, y la ventana de píxeles que hace falta leer
+    const P=new Float32Array(W*H*2);let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+    for(let j=0;j<H;j++)for(let i=0;i<W;i++){
+      const [X,Y]=m.geo?[lon[i],lat[j]]:aUTM(lat[j],lon[i],m.zona);
+      const px=(X-m.ox)/m.rx-0.5,py=(Y-m.oy)/m.ry-0.5,k=(j*W+i)*2;P[k]=px;P[k+1]=py;
+      if(px<x0)x0=px;if(px>x1)x1=px;if(py<y0)y0=py;if(py>y1)y1=py;
+    }
+    const a=Math.max(0,Math.floor(x0)-1),b=Math.max(0,Math.floor(y0)-1),c=Math.min(m.W,Math.ceil(x1)+2),d=Math.min(m.H,Math.ceil(y1)+2);
+    if(c<=a||d<=b)continue;
+    const R=(await m.img.readRasters({window:[a,b,c,d],samples:[0]}))[0],rw=c-a,rh=d-b;
+    const ok=v=>v===v&&v!==m.nd&&v>-1000&&v<9000;
+    for(let k=0;k<W*H;k++){
+      if(h[k]===h[k])continue;                               // ya lo puso otra hoja
+      const px=P[2*k]-a,py=P[2*k+1]-b;if(px<0||py<0||px>rw-1||py>rh-1)continue;
+      const xi=Math.min(rw-2,Math.floor(px)),yi=Math.min(rh-2,Math.floor(py)),fx=px-xi,fy=py-yi;
+      const v00=R[yi*rw+xi],v10=R[yi*rw+xi+1],v01=R[(yi+1)*rw+xi],v11=R[(yi+1)*rw+xi+1];
+      if(!(ok(v00)&&ok(v10)&&ok(v01)&&ok(v11))){                 // borde de datos: el más cercano válido
+        const v=[[v00,(1-fx)*(1-fy)],[v10,fx*(1-fy)],[v01,(1-fx)*fy],[v11,fx*fy]].filter(([v])=>ok(v)).sort((p,q)=>q[1]-p[1]);
+        if(v.length){h[k]=v[0][0];validos++;}continue;
+      }
+      h[k]=(v00*(1-fx)+v10*fx)*(1-fy)+(v01*(1-fx)+v11*fx)*fy;validos++;
+    }
+  }
+  if(!validos){if(dem.base)dem=dem.base;return {cubre:0,hojas:hojas.length};}
+  let min=Infinity,max=-Infinity;
+  for(let j=0;j<H;j++)for(let i=0;i<W;i++){const k=j*W+i;if(h[k]!==h[k])h[k]=hAtOf(old,i/(W-1),j/(H-1));if(h[k]<min)min=h[k];if(h[k]>max)max=h[k];}
+  const cubre=validos/(W*H);
+  dem={...old,W,H,h,min,max,mpp:old.wM/W,base:old,parcial:cubre<0.98,
+    fuente:`MDT02 CNIG · ${fmt(old.wM/W,1)} m/píxel`+(cubre<0.98?` (${fmt(cubre*100,0)} %; resto ${old.fuente.split(' ·')[0]})`:'')};
+  return {cubre,hojas:hojas.length};
+}
+function avisoMDT02(r){
+  if(!r)return [];
+  if(!r.cubre)return [r.hojas?'Las hojas del MDT02 no tienen datos en esta zona.':'Las hojas del MDT02 cargadas no cubren esta zona; carga las de aquí o se usa el modelo de siempre.'];
+  return r.cubre<0.98?[`El MDT02 cubre el ${fmt(r.cubre*100,0)} % de la zona; en el resto se usa ${dem.base.fuente.split(' ·')[0]}. Carga las hojas vecinas para cubrirla entera.`]:[];
+}
+function infoMDT02(){
+  const el=document.getElementById('mdt02info');
+  el.textContent=mdt02.length?` ${mdt02.length} hoja${mdt02.length>1?'s':''}`:'';
+  el.title=mdt02.map(m=>m.name).join('\n');
+  document.getElementById('mdt02quitar').hidden=!mdt02.length;
+}
+/* Aplica el MDT02 (o lo quita) sobre lo ya escaneado y rehace el 3D y la simulación */
+async function rehacerConMDT02(){
+  if(!dem)return;
+  const av=[];
+  if(mdt02.length){busy('Leyendo el MDT02…',null);await nextFrame();av.push(...avisoMDT02(await aplicarMDT02()));}
+  else if(dem.base)dem=dem.base;
+  busy('Construyendo el modelo 3D…',null);await nextFrame();
+  build(false);mesh.material.map.dispose();mesh.material.map=makeTexture();mesh.material.needsUpdate=true;
+  busy('Preparando la simulación de lluvia…',null);await nextFrame();
+  simPrepare();
+  const dd=[...document.querySelectorAll('#stats dt')].find(x=>x.textContent==='Alturas');
+  if(dd)dd.nextElementSibling.textContent=dem.fuente;
+  document.getElementById('aviso').textContent=av.join(' ');
+  busy('');
+}
+document.getElementById('mdt02btn').addEventListener('click',()=>document.getElementById('mdt02').click());
+document.getElementById('mdt02').addEventListener('change',async ev=>{
+  const files=[...ev.target.files];ev.target.value='';if(!files.length)return;
+  const malos=[];
+  try{
+    busy('Abriendo el MDT02…',null);await cargarGeoTIFF();
+    for(const f of files){
+      if(mdt02.some(m=>m.name===f.name&&m.size===f.size))continue;
+      try{const m=await abrirMDT02(f);m.size=f.size;mdt02.push(m);}catch(e){malos.push(e.message.includes(f.name)?e.message:`${f.name}: ${e.message}`);}
+    }
+    infoMDT02();busy('');
+    if(dem)await rehacerConMDT02();
+  }catch(e){busy('');malos.push(e.message);}
+  if(malos.length)document.getElementById('aviso').textContent='MDT02 — '+malos.join(' · ');
+});
+document.getElementById('mdt02quitar').addEventListener('click',async()=>{mdt02=[];infoMDT02();if(dem&&dem.base)await rehacerConMDT02();});
+
 /* Pasa la rejilla lat/lon del IGN al espacio del modelo y rellena huecos (mar, fuera de España) con la global */
 function aplicarIGN(ign){
   const old=dem,{cols,rows,grid}=ign,W=cols,H=rows,h=new Float32Array(W*H);
@@ -721,6 +840,13 @@ async function scan(){
           if(dem.parcial)aviso.push('Parte de la zona no tiene datos del IGN (mar o fuera de España); ahí se usan alturas globales.');
         }catch(e){aviso.push(`No se pudo usar el MDT del IGN (${e.message}); se usan alturas globales.`);}
       }
+    }
+
+    // MDT02 de las hojas que haya cargado el usuario
+    if(mdt02.length){
+      busy('Leyendo el MDT02…',null);
+      try{const r=await aplicarMDT02();aviso.push(...avisoMDT02(r));}
+      catch(e){aviso.push(`No se pudo leer el MDT02 (${e.message}).`);}
     }
 
     // Satélite
