@@ -75,6 +75,8 @@ input[type=checkbox]{accent-color:var(--accent)}
 .stats dd{margin:0}
 #aviso{padding:6px 12px;font-size:13px;color:var(--accent);background:var(--panel);border-top:1px solid var(--line)}
 #aviso:empty{display:none}
+#reintentarBox{background:var(--panel)}#reintentarBox:has(button[hidden]){display:none}
+#reintentar{margin:4px 12px 8px;font-size:13px}
 #mdt02falta{padding:6px 12px;font-size:13px;color:var(--muted);background:var(--panel);border-top:1px solid var(--line)}
 #mdt02falta:empty{display:none}
 #mdt02falta a{color:var(--accent)}
@@ -207,6 +209,7 @@ input[type=checkbox]{accent-color:var(--accent)}
       <button id="borrar" disabled>Borrar marcas</button>
     </div>
     <div id="aviso"></div>
+    <div id="reintentarBox"><button type="button" id="reintentar" hidden></button></div>
     <div id="mdt02falta"></div>
     <dl class="stats" id="stats"></dl>
     <div id="puntos"></div>
@@ -377,12 +380,15 @@ function loadImg(url){
   return new Promise((res,rej)=>{const i=new Image();i.crossOrigin='anonymous';i.onload=()=>res(i);i.onerror=()=>rej(url);i.src=url;});
 }
 /* Descarga y cose teselas con cola de concurrencia y progreso */
-async function stitch(z,t,urlFn,onProg){
-  const c=document.createElement('canvas');
-  c.width=(t.tx1-t.tx0+1)*TS;c.height=(t.ty1-t.ty0+1)*TS;
-  const ctx=c.getContext('2d',{willReadFrequently:true});
-  const n=2**z,list=[];
-  for(let ty=t.ty0;ty<=t.ty1;ty++)for(let tx=t.tx0;tx<=t.tx1;tx++)list.push([tx,ty]);
+async function stitch(z,t,urlFn,onProg,prev){
+  // con prev, solo se piden las teselas que faltaron y se pintan sobre lo que ya había
+  let c,ctx;const n=2**z,list=[],faltan=[];
+  if(prev){c=prev.canvas;ctx=prev.ctx;list.push(...prev.faltan);}
+  else{
+    c=document.createElement('canvas');c.width=(t.tx1-t.tx0+1)*TS;c.height=(t.ty1-t.ty0+1)*TS;
+    ctx=c.getContext('2d',{willReadFrequently:true});
+    for(let ty=t.ty0;ty<=t.ty1;ty++)for(let tx=t.tx0;tx<=t.tx1;tx++)list.push([tx,ty]);
+  }
   let done=0,fails=0,k=0;
   async function worker(){
     while(k<list.length){
@@ -391,12 +397,12 @@ async function stitch(z,t,urlFn,onProg){
       for(let a=0;a<2&&!ok;a++){
         try{const img=await loadImg(urlFn(z,wx,ty));ctx.drawImage(img,(tx-t.tx0)*TS,(ty-t.ty0)*TS);ok=true;}catch{}
       }
-      if(!ok)fails++;
+      if(!ok){fails++;faltan.push([tx,ty]);}
       done++;onProg&&onProg(done,list.length);
     }
   }
   await Promise.all(Array.from({length:12},worker));
-  return {canvas:c,ctx,fails,total:list.length};
+  return {canvas:c,ctx,fails,faltan,total:prev?prev.total:list.length};
 }
 function tileRange(z,b){
   const tx0=Math.floor(lon2px(b.west,z)/TS),tx1=Math.floor((lon2px(b.east,z)-1e-6)/TS);
@@ -513,15 +519,20 @@ async function elegirCobertura(b){
   }
   throw err;
 }
-async function fetchIGN(b,capPx,onProg){
-  const cov=await elegirCobertura(b);
+async function fetchIGN(b,capPx,onProg,prev){
+  // con prev, solo se piden los bloques que faltaron
   const cosL=Math.cos((b.north+b.south)/2*Math.PI/180);
   const wM=(b.east-b.west)*111320*cosL,hM=(b.north-b.south)*110574;
-  let cols=Math.ceil(wM/cov[1]),rows=Math.ceil(hM/cov[1]);
-  const f=Math.min(1,capPx/Math.max(cols,rows));cols=Math.max(4,Math.round(cols*f));rows=Math.max(4,Math.round(rows*f));
-  const CH=600,grid=new Float32Array(cols*rows).fill(NaN),jobs=[];
-  for(let y0=0;y0<rows;y0+=CH)for(let x0=0;x0<cols;x0+=CH)jobs.push([x0,y0,Math.min(cols,x0+CH),Math.min(rows,y0+CH)]);
-  const dLon=b.east-b.west,dLat=b.north-b.south;let k=0,done=0,fails=0;
+  let cov,cols,rows,grid,jobs=[];
+  if(prev){({cov,cols,rows,grid}=prev);jobs=prev.faltan.slice();}
+  else{
+    cov=await elegirCobertura(b);
+    cols=Math.ceil(wM/cov[1]);rows=Math.ceil(hM/cov[1]);
+    const f=Math.min(1,capPx/Math.max(cols,rows));cols=Math.max(4,Math.round(cols*f));rows=Math.max(4,Math.round(rows*f));
+    grid=new Float32Array(cols*rows).fill(NaN);
+    const CH=600;for(let y0=0;y0<rows;y0+=CH)for(let x0=0;x0<cols;x0+=CH)jobs.push([x0,y0,Math.min(cols,x0+CH),Math.min(rows,y0+CH)]);
+  }
+  const faltan=[],dLon=b.east-b.west,dLat=b.north-b.south;let k=0,done=0,fails=0;
   async function worker(){
     while(k<jobs.length){
       const [x0,y0,x1,y1]=jobs[k++],cw=x1-x0,ch=y1-y0;
@@ -531,14 +542,14 @@ async function fetchIGN(b,capPx,onProg){
         try{const part=parseAsc(await ignGet(url),cw,ch);
           for(let r=0;r<ch;r++)grid.set(part.subarray(r*cw,(r+1)*cw),(y0+r)*cols+x0);ok=true;}catch{}
       }
-      if(!ok)fails++;
+      if(!ok){fails++;faltan.push([x0,y0,x1,y1]);}
       done++;onProg&&onProg(done,jobs.length,cov[2]);
     }
   }
   onProg&&onProg(0,jobs.length,cov[2]);
   await Promise.all(Array.from({length:6},worker));
-  if(fails===jobs.length)throw new Error('no respondió');
-  return {cols,rows,grid,cov,fails,resM:wM/cols};
+  if(fails===jobs.length&&!prev)throw new Error('no respondió');
+  return {cols,rows,grid,cov,fails,faltan,resM:wM/cols};
 }
 /* ---------- MDT02 (2 m) desde las hojas del CNIG ----------
    El servicio del IGN no da el MDT02, pero el Centro de Descargas del CNIG lo ofrece por hojas del MTN25
@@ -831,152 +842,209 @@ function drawStreetsOn(canvas){
 
 /* ---------- Escaneo ---------- */
 document.getElementById('escanear').addEventListener('click',scan);
+/* El último escaneo: la zona, todo lo descargado y lo que faltó. «Reintentar» pide solo lo que faltó
+   (teselas, bloques o cuadros sueltos, o una parte entera) para esa misma zona, aunque se haya movido el mapa. */
+let ESC=null;
+const PARTES={alturas:'alturas',ign:'MDT del IGN',sat:'imagen satélite',calles:'calles',usos:'edificios y usos del suelo',catastro:'edificios del Catastro',cuencas:'cuencas de fuera'};
+function fallos(E){
+  if(!E)return [];
+  const R=E.R,f=[];
+  if(R.dem&&R.dem.fails)f.push('alturas');
+  if(E.useIGN&&R.ign&&(R.ign.err||R.ign.fails))f.push('ign');
+  if(!R.sat||!R.sat.ss||R.sat.ss.fails)f.push('sat');
+  if(R.calles&&R.calles.err)f.push('calles');
+  if(R.usos&&R.usos.err)f.push('usos');
+  if(R.cat&&((R.cat.err&&location.protocol!=='file:')||R.cat.fails))f.push('catastro');
+  if((R.wide&&R.wide.err)||(R.cob&&R.cob.err))f.push('cuencas');
+  return f;
+}
+function pintarReintentar(){
+  const f=fallos(ESC),bt=document.getElementById('reintentar');
+  bt.hidden=!f.length;bt.textContent=`↻ Reintentar solo lo que falló: ${f.map(k=>PARTES[k]).join(', ')}`;
+}
+/* Descarga todo (solo=null) o solo las partes indicadas, completando lo que ya había */
+async function descargar(E,solo){
+  const {b,areaKm2}=E,R=E.R,quiere=k=>!solo||solo.has(k);
+  const prog={};
+  const showProg=()=>{
+    const parts=Object.values(prog);let d=0,n=0;
+    parts.forEach(p=>{d+=p.d;n+=p.n;});
+    busy((solo?'Reintentando ':'Descargando ')+parts.map(p=>`${p.name} ${p.n?Math.round(p.d/p.n*100)+' %':'…'}`).join(' · '),n?d/n:null);
+  };
+  const track=(key,name)=>(d,n,extra)=>{prog[key]={name:extra?`${name} ${extra}`:name,d,n};showProg();};
+  const tareas=[];
+  const fin=(key,name)=>()=>{prog[key]={name,d:1,n:1};showProg();};
+  if(quiere('calles')){prog.calles={name:'calles',d:0,n:0};
+    tareas.push(fetchStreets(b,areaKm2).catch(e=>({err:e})).then(r=>{R.calles=r;fin('calles','calles')();}));}
+  if(quiere('usos')){prog.usos={name:'edificios y usos',d:0,n:0};
+    tareas.push((areaKm2<=LAND_MAX_KM2?fetchLand(b).catch(e=>({err:e})):Promise.resolve({skip:true})).then(r=>{R.usos=r;fin('usos','edificios y usos')();}));}
+  if(quiere('catastro')&&enEspana(b)&&areaKm2<=CAT_MAX_KM2){
+    const prev=R.cat&&!R.cat.err?R.cat:null;
+    tareas.push(fetchCatastro(b,track('cat','edificios del Catastro'),prev).catch(e=>({err:e})).then(r=>{R.cat=r;}));}
+  if(quiere('alturas')){
+    if(!R.dem){let z=DEM_MAXZ;while(z>1&&tileRange(z,b).n>Q.demTiles)z--;R.dem={z,t:tileRange(z,b)};}
+    const D=R.dem;
+    tareas.push(stitch(D.z,D.t,DEM_URL,track('dem','alturas'),D.st).then(st=>{D.st=st;D.fails=st.fails;}));}
+  if(quiere('cuencas')){
+    if(!R.wide||R.wide.err)tareas.push(fetchWide(b,track('ext','cuencas de fuera')).catch(e=>({err:e})).then(r=>{R.wide=r;}));
+    if(!R.cob||R.cob.err)tareas.push(fetchCobertura(bboxAmplio(b)).catch(e=>({err:e})).then(r=>{R.cob=r;}));}
+  if(quiere('ign')&&E.useIGN){
+    const prev=R.ign&&!R.ign.err?R.ign:null;
+    tareas.push(fetchIGN(b,Q.ign,(d,n,c)=>track('ign','MDT IGN')(d,n,c),prev).catch(e=>({err:e})).then(r=>{R.ign=r;}));}
+  if(quiere('sat')){
+    if(!R.sat){
+      const texMax=Math.min(Q.tex,GPU_TEX);let zs=SAT_MAXZ;
+      const satPx=zz=>Math.max(lon2px(b.east,zz)-lon2px(b.west,zz),lat2px(b.south,zz)-lat2px(b.north,zz));
+      while(zs>1&&(satPx(zs)>texMax*1.05||tileRange(zs,b).n>Q.satTiles))zs--;
+      R.sat={zs,ts:tileRange(zs,b),texMax};
+    }
+    const S0=R.sat;
+    tareas.push(stitch(S0.zs,S0.ts,SAT_URL,track('sat','satélite'),S0.ss&&S0.ss.fails<S0.ss.total?S0.ss:null).catch(()=>null).then(ss=>{S0.ss=ss;}));}
+  await Promise.all(tareas);
+}
+/* Con lo descargado, monta el modelo de alturas, el 3D y la simulación */
+async function montar(E,primera){
+  const {b,R}=E,aviso=[];
+  const cosL=Math.cos((b.north+b.south)/2*Math.PI/180);
+  // Alturas globales
+  const {z,t,st:s}=R.dem;
+  if(s.fails===s.total)throw new Error('No se pudieron descargar los datos de altura. Pulsa «Reintentar».');
+  if(s.fails)aviso.push(`Faltaron ${s.fails} teselas de altura.`);
+  const X0=lon2px(b.west,z),Y0=lat2px(b.north,z),Wp=lon2px(b.east,z)-X0,Hp=lat2px(b.south,z)-Y0;
+  const W=Math.max(2,Math.round(Wp)),H=Math.max(2,Math.round(Hp));
+  const img=s.ctx.getImageData(Math.round(X0-t.tx0*TS),Math.round(Y0-t.ty0*TS),W,H).data;
+  const h=new Float32Array(W*H);let min=Infinity,max=-Infinity;
+  for(let i=0;i<W*H;i++){
+    const v=img[i*4+3]===0?NaN:decode(img[i*4],img[i*4+1],img[i*4+2]);
+    h[i]=v;if(!isNaN(v)){if(v<min)min=v;if(v>max)max=v;}
+  }
+  for(let i=0;i<W*H;i++)if(isNaN(h[i]))h[i]=min;
+  const mpp=156543.03392*cosL/2**z;
+  dem={W,H,Wp,Hp,h,min,max,z,X0,Y0,mpp,wM:Wp*mpp,hM:Hp*mpp,fuente:`Global · ${fmt(mpp,1)} m/píxel`};
+
+  // MDT del IGN
+  if(E.useIGN&&R.ign){
+    const ign=R.ign;
+    if(ign.err)aviso.push(`No se pudo usar el MDT del IGN (${ign.err.message==='Failed to fetch'?'el navegador bloqueó la conexión':ign.err.message}); se usan alturas globales.`);
+    else{
+      try{aplicarIGN(ign);
+        if(ign.fails)aviso.push(`Faltaron ${ign.fails} bloques del IGN; ahí se usan alturas globales.`);
+        if(dem.parcial)aviso.push('Parte de la zona no tiene datos del IGN (mar o fuera de España); ahí se usan alturas globales.');
+      }catch(e){aviso.push(`No se pudo usar el MDT del IGN (${e.message}); se usan alturas globales.`);}
+    }
+  }
+
+  // MDT02 de las hojas que haya cargado el usuario
+  if(mdt02.length){
+    busy('Leyendo el MDT02…',null);
+    try{const r=await aplicarMDT02();aviso.push(...avisoMDT02(r));}
+    catch(e){aviso.push(`No se pudo leer el MDT02 (${e.message}).`);}
+  }
+
+  // Satélite
+  sat=null;
+  const S0=R.sat,ss=S0&&S0.ss;
+  if(ss&&ss.fails<ss.total){
+    try{
+      const zs=S0.zs,ts=S0.ts;
+      const sx=lon2px(b.west,zs)-ts.tx0*TS,sy=lat2px(b.north,zs)-ts.ty0*TS,sw=lon2px(b.east,zs)-lon2px(b.west,zs),sh=lat2px(b.south,zs)-lat2px(b.north,zs);
+      const k=Math.min(1,S0.texMax/Math.max(sw,sh));
+      sat=document.createElement('canvas');sat.width=Math.round(sw*k);sat.height=Math.round(sh*k);
+      const g=sat.getContext('2d');g.imageSmoothingQuality='high';g.drawImage(ss.canvas,sx,sy,sw,sh,0,0,sat.width,sat.height);
+      g.getImageData(0,0,1,1);
+      dem.satZ=zs;dem.satMpp=dem.wM/sat.width;
+      if(ss.fails)aviso.push(`Faltaron ${ss.fails} teselas de imagen.`);
+    }catch{sat=null;}
+  }
+  if(!sat){document.getElementById('tex').value='hyp';aviso.push('No se pudo cargar la imagen satélite; se muestra el relieve coloreado.');}
+  else if(primera===false&&document.getElementById('tex').value==='hyp'&&E.satFalloAntes)document.getElementById('tex').value='sat';
+  E.satFalloAntes=!sat;
+
+  // Calles y usos del suelo
+  const rs=R.calles;
+  if(rs.err){streets=[];streetIdx=null;aviso.push('No se pudieron cargar las calles (el servidor de OpenStreetMap no respondió).');}
+  else{streets=rs.list;if(rs.nota)aviso.push(rs.nota);prepareStreets();}
+  drawStreets2D();
+  const rl=R.usos;
+  if(rl.skip){landData=null;aviso.push(`Zona de más de ${LAND_MAX_KM2} km²: la simulación de lluvia no distingue edificios ni usos del suelo.`);}
+  else if(rl.err){landData=null;aviso.push('No se pudieron cargar edificios y usos del suelo; la simulación los tratará como terreno sin clasificar.');}
+  else landData={...rl,items:rl.items.slice()};          // copia: el Catastro sustituye los edificios sin tocar lo descargado
+  if(R.cat){
+    const rc=R.cat;
+    if(rc.err)aviso.push(location.protocol==='file:'?'Los edificios del Catastro solo se cargan con el visor en tu web (necesita catastro.php); se usan los de OpenStreetMap.'
+      :`No se pudieron cargar los edificios del Catastro (${rc.err.message}); se usan los de OpenStreetMap.`);
+    else if(rc.partes.length){usarCatastro(rc);if(rc.fails)aviso.push(`Faltaron ${rc.fails} de ${rc.tiles} cuadrados del Catastro.`);}
+  }
+  const rw=R.wide,cob=R.cob||{err:true};
+  if(rw.err){cuencaExt=null;extB=null;aviso.push('No se pudo calcular el agua que traen los arroyos desde fuera de la zona.');}
+  else{extB=rw.B;coberturaInfo=cob.err?null:cob.src;
+    try{cuencaExt=calcEntradas(rw,b,cob.err?null:cob);}catch(e){cuencaExt=null;}}
+  const ci=document.getElementById('cobInfo');
+  if(ci)ci.textContent=coberturaInfo?`Tipos de suelo de las cuencas: ${coberturaInfo}`:(cuencaExt&&cuencaExt.length?'Sin mapa de tipos de suelo: las cuencas de fuera se tratan como cultivos y pastos':'');
+  scanB={north:b.north,south:b.south,west:b.west,east:b.east};
+  if(primera){
+    hojasZona=null;pintarHojasFalta();
+    if(enEspana(b))hojasMTN25(b).then(h=>{hojasZona=h;pintarHojasFalta();}).catch(()=>{});
+    if(scanRect)scanRect.remove();
+    scanRect=L.rectangle([[b.south,b.west],[b.north,b.east]],{color:'#e08a4c',weight:2,fill:false,dashArray:'6 4',interactive:false}).addTo(map);
+  }
+
+  const range=dem.max-dem.min,opts=[1,2,5,10,20,25,50,100];
+  if(primera)document.getElementById('equi').value=String(opts.find(o=>range/o<=25)||100);
+
+  busy('Construyendo el modelo 3D…',null);await nextFrame();
+  if(primera){clearMarkers();build(true);}
+  else{build(false);mesh.material.map.dispose();mesh.material.map=makeTexture();mesh.material.needsUpdate=true;}
+  busy('Preparando la simulación de lluvia…',null);await nextFrame();
+  simPrepare();
+  if(primera&&typeof previsionTrasEscaneo==='function')previsionTrasEscaneo();
+  document.getElementById('empty').hidden=true;
+  ['stl','csv'].forEach(id=>document.getElementById(id).disabled=false);
+  const nCalles=new Set(streets.filter(x=>x.name).map(x=>x.name)).size;
+  document.getElementById('stats').innerHTML=
+    `<div><dt>Mín</dt><dd class="num">${fmt(dem.min,1)} m</dd></div>`+
+    `<div><dt>Máx</dt><dd class="num">${fmt(dem.max,1)} m</dd></div>`+
+    `<div><dt>Desnivel</dt><dd class="num">${fmt(range,1)} m</dd></div>`+
+    `<div><dt>Zona</dt><dd class="num">${fmt(dem.wM/1000,2)} × ${fmt(dem.hM/1000,2)} km</dd></div>`+
+    `<div><dt>Alturas</dt><dd class="num">${esc(dem.fuente)}</dd></div>`+
+    (sat?`<div><dt>Imagen</dt><dd class="num">${fmt(dem.satMpp,2)} m/píxel</dd></div>`:'')+
+    `<div><dt>Calles</dt><dd class="num">${fmt(streets.length)} tramos · ${fmt(nCalles)} nombres</dd></div>`+
+    (landData?`<div><dt>Edificios</dt><dd class="num">${fmt(landData.nEdif)} · ${landData.fuenteEdif||'OpenStreetMap'}</dd></div>`:'');
+  const f=fallos(E);
+  if(f.length)aviso.push(`Puedes reintentar solo lo que falló (${f.map(k=>PARTES[k]).join(', ')}) con el botón «Reintentar», aunque hayas movido el mapa.`);
+  document.getElementById('aviso').textContent=aviso.join(' ');
+  E.montado=true;
+  busy('');
+}
 async function scan(){
   const btn=document.getElementById('escanear');btn.disabled=true;
-  const aviso=[];
   Q=CALIDAD[document.getElementById('calidad').value];
-  const texMax=Math.min(Q.tex,GPU_TEX);
   simStop();
   try{
     const bb=map.getBounds();
     const b={north:Math.min(bb.getNorth(),85),south:Math.max(bb.getSouth(),-85),west:bb.getWest(),east:bb.getEast()};
     const latC=(b.north+b.south)/2,cosL=Math.cos(latC*Math.PI/180);
-    const wKm=(b.east-b.west)*111.32*cosL,hKm=(b.north-b.south)*110.57,areaKm2=wKm*hKm;
-
-    // Progreso conjunto: todo se descarga a la vez
-    const prog={};
-    const showProg=()=>{
-      const parts=Object.values(prog);let d=0,n=0;
-      parts.forEach(p=>{d+=p.d;n+=p.n;});
-      busy('Descargando '+parts.map(p=>`${p.name} ${p.n?Math.round(p.d/p.n*100)+' %':'…'}`).join(' · '),n?d/n:null);
-    };
-    const track=(key,name)=>(d,n,extra)=>{prog[key]={name:extra?`${name} ${extra}`:name,d,n};showProg();};
-
-    // Todo en paralelo: calles, usos del suelo, alturas globales, IGN y satélite
-    prog.osm={name:'calles y edificios',d:0,n:0};
-    const pStreets=fetchStreets(b,areaKm2).catch(e=>({err:e}));
-    const pLand=areaKm2<=LAND_MAX_KM2?fetchLand(b).catch(e=>({err:e})):Promise.resolve({skip:true});
-    const pCat=enEspana(b)&&areaKm2<=CAT_MAX_KM2?fetchCatastro(b,track('cat','edificios del Catastro')).catch(e=>({err:e})):null;
-    Promise.allSettled([pStreets,pLand]).then(()=>{prog.osm={name:'calles y edificios',d:1,n:1};showProg();});
-
-    let z=DEM_MAXZ;while(z>1&&tileRange(z,b).n>Q.demTiles)z--;
-    const t=tileRange(z,b);
-    const pDem=stitch(z,t,DEM_URL,track('dem','alturas'));
-    const pWide=fetchWide(b,track('ext','cuencas de fuera')).catch(e=>({err:e}));
-    const pCob=fetchCobertura(bboxAmplio(b)).catch(e=>({err:e}));
-    const useIGN=document.getElementById('fuente').value==='auto'&&enEspana(b);
-    const pIGN=useIGN?fetchIGN(b,Q.ign,(d,n,c)=>track('ign','MDT IGN')(d,n,c)).catch(e=>({err:e})):null;
-
-    let zs=SAT_MAXZ;
-    const satPx=zz=>Math.max(lon2px(b.east,zz)-lon2px(b.west,zz),lat2px(b.south,zz)-lat2px(b.north,zz));
-    while(zs>1&&(satPx(zs)>texMax*1.05||tileRange(zs,b).n>Q.satTiles))zs--;
-    const ts=tileRange(zs,b);
-    const pSat=stitch(zs,ts,SAT_URL,track('sat','satélite')).catch(()=>null);
-
-    // Alturas globales
-    const s=await pDem;
-    if(s.fails===s.total)throw new Error('No se pudieron descargar los datos de altura.');
-    if(s.fails)aviso.push(`Faltaron ${s.fails} teselas de altura.`);
-    const X0=lon2px(b.west,z),Y0=lat2px(b.north,z),Wp=lon2px(b.east,z)-X0,Hp=lat2px(b.south,z)-Y0;
-    const W=Math.max(2,Math.round(Wp)),H=Math.max(2,Math.round(Hp));
-    const img=s.ctx.getImageData(Math.round(X0-t.tx0*TS),Math.round(Y0-t.ty0*TS),W,H).data;
-    const h=new Float32Array(W*H);let min=Infinity,max=-Infinity;
-    for(let i=0;i<W*H;i++){
-      const v=img[i*4+3]===0?NaN:decode(img[i*4],img[i*4+1],img[i*4+2]);
-      h[i]=v;if(!isNaN(v)){if(v<min)min=v;if(v>max)max=v;}
-    }
-    for(let i=0;i<W*H;i++)if(isNaN(h[i]))h[i]=min;
-    const mpp=156543.03392*cosL/2**z;
-    dem={W,H,Wp,Hp,h,min,max,z,X0,Y0,mpp,wM:Wp*mpp,hM:Hp*mpp,fuente:`Global · ${fmt(mpp,1)} m/píxel`};
-
-    // MDT del IGN
-    if(pIGN){
-      const ign=await pIGN;
-      if(ign.err)aviso.push(`No se pudo usar el MDT del IGN (${ign.err.message==='Failed to fetch'?'el navegador bloqueó la conexión':ign.err.message}); se usan alturas globales.`);
-      else{
-        try{aplicarIGN(ign);
-          if(ign.fails)aviso.push(`Faltaron ${ign.fails} bloques del IGN; ahí se usan alturas globales.`);
-          if(dem.parcial)aviso.push('Parte de la zona no tiene datos del IGN (mar o fuera de España); ahí se usan alturas globales.');
-        }catch(e){aviso.push(`No se pudo usar el MDT del IGN (${e.message}); se usan alturas globales.`);}
-      }
-    }
-
-    // MDT02 de las hojas que haya cargado el usuario
-    if(mdt02.length){
-      busy('Leyendo el MDT02…',null);
-      try{const r=await aplicarMDT02();aviso.push(...avisoMDT02(r));}
-      catch(e){aviso.push(`No se pudo leer el MDT02 (${e.message}).`);}
-    }
-
-    // Satélite
-    sat=null;
-    const ss=await pSat;
-    if(ss&&ss.fails<ss.total){
-      try{
-        const sx=lon2px(b.west,zs)-ts.tx0*TS,sy=lat2px(b.north,zs)-ts.ty0*TS,sw=lon2px(b.east,zs)-lon2px(b.west,zs),sh=lat2px(b.south,zs)-lat2px(b.north,zs);
-        const k=Math.min(1,texMax/Math.max(sw,sh));
-        sat=document.createElement('canvas');sat.width=Math.round(sw*k);sat.height=Math.round(sh*k);
-        const g=sat.getContext('2d');g.imageSmoothingQuality='high';g.drawImage(ss.canvas,sx,sy,sw,sh,0,0,sat.width,sat.height);
-        g.getImageData(0,0,1,1);
-        dem.satZ=zs;dem.satMpp=dem.wM/sat.width;
-        if(ss.fails)aviso.push(`Faltaron ${ss.fails} teselas de imagen.`);
-      }catch{sat=null;}
-    }
-    if(!sat){document.getElementById('tex').value='hyp';aviso.push('No se pudo cargar la imagen satélite; se muestra el relieve coloreado.');}
-
-    // Calles y usos del suelo
-    const rs=await pStreets;
-    if(rs.err){streets=[];streetIdx=null;aviso.push('No se pudieron cargar las calles (el servidor de OpenStreetMap no respondió). Vuelve a escanear en un momento.');}
-    else{streets=rs.list;if(rs.nota)aviso.push(rs.nota);prepareStreets();}
-    drawStreets2D();
-    const rl=await pLand;
-    if(rl.skip){landData=null;aviso.push(`Zona de más de ${LAND_MAX_KM2} km²: la simulación de lluvia no distingue edificios ni usos del suelo.`);}
-    else if(rl.err){landData=null;aviso.push('No se pudieron cargar edificios y usos del suelo; la simulación los tratará como terreno sin clasificar.');}
-    else landData=rl;
-    if(pCat){
-      const rc=await pCat;
-      if(rc.err)aviso.push(location.protocol==='file:'?'Los edificios del Catastro solo se cargan con el visor en tu web (necesita catastro.php); se usan los de OpenStreetMap.'
-        :`No se pudieron cargar los edificios del Catastro (${rc.err.message}); se usan los de OpenStreetMap.`);
-      else if(rc.partes.length){usarCatastro(rc);if(rc.fails)aviso.push(`Faltaron ${rc.fails} de ${rc.tiles} cuadrados del Catastro.`);}
-    }
-    const rw=await pWide;
-    if(rw.err){cuencaExt=null;extB=null;aviso.push('No se pudo calcular el agua que traen los arroyos desde fuera de la zona.');}
-    else{extB=rw.B;const cob=await pCob;coberturaInfo=cob.err?null:cob.src;
-      try{cuencaExt=calcEntradas(rw,b,cob.err?null:cob);}catch(e){cuencaExt=null;}}
-    const ci=document.getElementById('cobInfo');
-    if(ci)ci.textContent=coberturaInfo?`Tipos de suelo de las cuencas: ${coberturaInfo}`:(cuencaExt&&cuencaExt.length?'Sin mapa de tipos de suelo: las cuencas de fuera se tratan como cultivos y pastos':'');
-    scanB={north:b.north,south:b.south,west:b.west,east:b.east};
-    hojasZona=null;pintarHojasFalta();
-    if(enEspana(b))hojasMTN25(b).then(h=>{hojasZona=h;pintarHojasFalta();}).catch(()=>{});
-
-    if(scanRect)scanRect.remove();
-    scanRect=L.rectangle([[b.south,b.west],[b.north,b.east]],{color:'#e08a4c',weight:2,fill:false,dashArray:'6 4',interactive:false}).addTo(map);
-
-    const range=dem.max-dem.min,opts=[1,2,5,10,20,25,50,100];
-    document.getElementById('equi').value=String(opts.find(o=>range/o<=25)||100);
-
-    busy('Construyendo el modelo 3D…',null);await nextFrame();
-    clearMarkers();build(true);
-    busy('Preparando la simulación de lluvia…',null);await nextFrame();
-    simPrepare();
-    if(typeof previsionTrasEscaneo==='function')previsionTrasEscaneo();
-    document.getElementById('empty').hidden=true;
-    ['stl','csv'].forEach(id=>document.getElementById(id).disabled=false);
-    const nCalles=new Set(streets.filter(x=>x.name).map(x=>x.name)).size;
-    document.getElementById('stats').innerHTML=
-      `<div><dt>Mín</dt><dd class="num">${fmt(dem.min,1)} m</dd></div>`+
-      `<div><dt>Máx</dt><dd class="num">${fmt(dem.max,1)} m</dd></div>`+
-      `<div><dt>Desnivel</dt><dd class="num">${fmt(range,1)} m</dd></div>`+
-      `<div><dt>Zona</dt><dd class="num">${fmt(dem.wM/1000,2)} × ${fmt(dem.hM/1000,2)} km</dd></div>`+
-      `<div><dt>Alturas</dt><dd class="num">${esc(dem.fuente)}</dd></div>`+
-      (sat?`<div><dt>Imagen</dt><dd class="num">${fmt(dem.satMpp,2)} m/píxel</dd></div>`:'')+
-      `<div><dt>Calles</dt><dd class="num">${fmt(streets.length)} tramos · ${fmt(nCalles)} nombres</dd></div>`+
-      (landData?`<div><dt>Edificios</dt><dd class="num">${fmt(landData.nEdif)} · ${landData.fuenteEdif||'OpenStreetMap'}</dd></div>`:'');
-    document.getElementById('aviso').textContent=aviso.join(' ');
-    busy('');
+    const areaKm2=(b.east-b.west)*111.32*cosL*(b.north-b.south)*110.57;
+    ESC={b,areaKm2,Q,useIGN:document.getElementById('fuente').value==='auto'&&enEspana(b),R:{}};
+    await descargar(ESC,null);
+    await montar(ESC,true);
   }catch(err){busy(err.message||'Error al escanear.');setTimeout(()=>busy(''),5000);}
-  finally{btn.disabled=false;}
+  finally{btn.disabled=false;pintarReintentar();}
 }
+async function reintentar(){
+  const f=fallos(ESC);if(!f.length)return;
+  const btn=document.getElementById('escanear'),bt=document.getElementById('reintentar');btn.disabled=bt.disabled=true;
+  Q=ESC.Q;simStop();
+  const primera=!ESC.montado;   // si el primer intento no llegó a montar nada
+  try{
+    await descargar(ESC,new Set(f));
+    await montar(ESC,primera);
+    const ya=f.filter(k=>!fallos(ESC).includes(k));
+    if(ya.length){busy(`Completado: ${ya.map(k=>PARTES[k]).join(', ')}.`);setTimeout(()=>busy(''),3000);}
+  }catch(err){busy(err.message||'Error al reintentar.');setTimeout(()=>busy(''),5000);}
+  finally{btn.disabled=bt.disabled=false;pintarReintentar();}
+}
+document.getElementById('reintentar').addEventListener('click',reintentar);
 
 /* ---------- Malla ---------- */
 const SCENE_W=100;
@@ -1639,13 +1707,14 @@ function leerGMLCatastro(txt,zona){
   }
   return {out,n:feats.length};
 }
-async function fetchCatastro(b,onProg){
+async function fetchCatastro(b,onProg,prev){
   const lonC=(b.west+b.east)/2,zona=lonC<-6?29:lonC<0?30:31,srs=25800+zona;
   const [x0,y0]=aUTM(b.south,b.west,zona),[x1,y1]=aUTM(b.north,b.east,zona),[x2,y2]=aUTM(b.north,b.west,zona),[x3,y3]=aUTM(b.south,b.east,zona);
   const X0=Math.min(x0,x2)-20,X1=Math.max(x1,x3)+20,Y0=Math.min(y0,y3)-20,Y1=Math.max(y1,y2)+20,T=700;
-  const jobs=[];for(let y=Y0;y<Y1;y+=T)for(let x=X0;x<X1;x+=T)jobs.push([x,y,Math.min(X1,x+T),Math.min(Y1,y+T)]);
+  let jobs=[];for(let y=Y0;y<Y1;y+=T)for(let x=X0;x<X1;x+=T)jobs.push([x,y,Math.min(X1,x+T),Math.min(Y1,y+T)]);
+  const total=jobs.length;if(prev)jobs=prev.faltan.slice();   // reintento: solo los cuadros que faltaron
   const urlDe=(bb,t)=>{const q=`z=${srs}&bbox=${bb.map(v=>v.toFixed(1)).join(',')}${t?'&t=building':''}`;return 'catastro.php?'+q;};
-  let k=0,done=0,fails=0,lastErr=null;const partes=[],vistos=new Set();
+  let k=0,done=0,fails=0,lastErr=null;const partes=prev?prev.partes:[],vistos=new Set(partes.map(p=>p.id||p.ring[0].join(','))),faltan=[];
   onProg&&onProg(0,jobs.length);
   async function worker(){
     while(k<jobs.length){
@@ -1658,13 +1727,13 @@ async function fetchCatastro(b,onProg){
           ok=true;break;
         }catch(e){lastErr=e;if(String(e.message).startsWith('HTTP 404'))break;}
       }
-      if(!ok)fails++;
+      if(!ok){fails++;faltan.push(bb);}
       done++;onProg&&onProg(done,jobs.length);
     }
   }
   await Promise.all(Array.from({length:4},worker));
-  if(fails===jobs.length)throw lastErr||new Error('sin respuesta');
-  return {partes,fails,tiles:jobs.length};
+  if(fails===jobs.length&&!prev)throw lastErr||new Error('sin respuesta');
+  return {partes,fails,faltan,tiles:total};
 }
 /* Sustituye los edificios de OpenStreetMap por los del Catastro */
 function usarCatastro(cat){
