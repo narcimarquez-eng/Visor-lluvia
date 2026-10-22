@@ -263,7 +263,7 @@ input[type=checkbox]{accent-color:var(--accent)}
         <label>Traga cada uno <input type="range" id="sQi" min="1" max="40" value="10"><output id="oQi">10 L/s</output></label>
         <label>Alcantarillado <input type="range" id="sRed" min="0" max="100" value="25"><output id="oRed">25 mm/h</output></label>
         <label>Carreteras fuera del pueblo <select id="sCarr"><option value="cunetas" selected>desaguan por cunetas</option><option value="imbornales">tienen imbornales</option></select></label>
-        <label>Hondonadas <select id="sHond"><option value="c05">buscan salida cortando hasta 0,5 m</option><option value="c1" selected>buscan salida cortando hasta 1 m</option><option value="c3">buscan salida cortando hasta 3 m</option><option value="balsa">se llenan como balsas</option></select></label>
+        <label>Hondonadas <select id="sHond"><option value="c05">buscan salida cortando hasta 0,5 m</option><option value="c1" selected>buscan salida cortando hasta 1 m</option><option value="c3">buscan salida cortando hasta 3 m</option><option value="balsa">se llenan como balsas</option><option value="nada">terreno tal cual, sin ningún retoque</option></select></label>
         <label>Tejados <select id="sTej"><option value="calle">vierten a la calle</option><option value="red" selected>van a la red</option></select></label>
       </div>
       <div class="simrow">
@@ -273,10 +273,10 @@ input[type=checkbox]{accent-color:var(--accent)}
         <label>Velocidad <select id="sVel"><option value="1">Tiempo real (×1)</option><option value="10">×10</option><option value="60">×60</option><option value="300">×300</option><option value="0" selected>Lo más rápido posible</option></select></label>
         <label>Ver <select id="sVer">
           <option value="d">Agua ahora</option><option value="max">Calado máximo alcanzado</option>
-          <option value="flux">Por dónde pasa más agua</option><option value="pel">Peligro para personas y coches</option><option value="acc">Zonas que reciben más agua (cuenca)</option>
+          <option value="flux">Por dónde pasa más agua</option><option value="pel">Peligro para personas y coches</option><option value="acc">Zonas que reciben más agua (cuenca)</option><option value="ret">Hondonadas reales y retoques del terreno</option>
           <option value="none">Nada</option></select></label>
         <label>Al pinchar en el mapa o el 3D <select id="clicmodo"><option value="marca">marca una cota</option><option value="imbornal">pone o quita un imbornal</option><option value="camara">abre la cámara de calle aquí</option></select></label>
-        <label>Detalle <select id="sDet"><option value="250">250 celdas</option><option value="400" selected>400 celdas</option><option value="600">600 celdas (lento)</option></select></label>
+        <label>Detalle <select id="sDet"><option value="250">250 celdas</option><option value="400" selected>400 celdas</option><option value="600">600 celdas (lento)</option><option value="mdt">cada celda, un píxel del MDT (5 m con el IGN; muy lento en zonas grandes)</option></select></label>
       </div>
       <div class="legend" id="simLeyenda"></div>
       <div class="imbleg">Imbornales: <span><i style="background:#9aa7b4"></i>seco</span><span><i style="background:#1f6bff"></i>tragando</span><span><i style="background:#d9342b"></i>colmado (le llega más de lo que traga)</span></div>
@@ -292,7 +292,9 @@ input[type=checkbox]{accent-color:var(--accent)}
           <li><b>Terreno.</b> Cotas del MDT (IGN o global) remuestreadas a la rejilla de simulación. Las calzadas se rebajan 12 cm respecto a las aceras, como un bordillo, para que el agua corra por ellas.</li>
           <li><b>Hondonadas.</b> Un modelo del terreno tiene pozos que en la calle no existen: pasos bajo la calzada, cunetas, alcantarillas de paso o ruido de la medición. Con «el agua busca salida», cada hondonada se conecta con el punto más bajo cercano que tenga salida rebajando el camino lo justo, hasta el corte que elijas: 1 m por defecto (en ciudad basta; 3 m para terraplenes de carretera con obras de drenaje). Por esos pasos el agua va más despacio. Las hondonadas más profundas se respetan. El agua siempre se mide sobre el terreno original, no sobre el fondo del paso. Los patios rodeados de edificios desaguan por bajantes, como los tejados.</li>
           <li><b>Puentes, túneles y alcantarillas.</b> Las vías que OpenStreetMap marca como puente o túnel no se pintan sobre el terreno: el agua pasa por debajo del puente o por encima del túnel. Las alcantarillas y cauces soterrados de OpenStreetMap unen su entrada y su salida por debajo; donde un cauce cruza una vía sin puente se supone una alcantarilla (del tamaño típico del cauce: arroyo Ø 1,2 m, acequia 0,6 m, canal 2 m, río 3 m, o el que diga OpenStreetMap), y donde una hondonada solo tiene salida atravesando una carretera, un paso de Ø 1 m. La carretera no se rebaja: la alcantarilla traga según el agua que tiene delante y, si llega más de la que cabe, el agua sube y pasa por encima de la vía. En el mapa: gris seca, azul corre agua, naranja llena, rojo desbordada.</li>
-          <li><b>Llanos.</b> Donde el MDT da la misma cota en varias celdas seguidas, la calle real tiene una pendiente que el modelo no ve (las calles se hacen con al menos un 0,5 %). Se da a esos llanos una pendiente mínima del 0,3 % hacia su salida más baja, sin subir nunca el terreno más de 30 cm, para que con muy poca agua ésta siga su camino. El agua que se muestra se mide siempre sobre el terreno real.</li>
+          <li><b>Resolución.</b> El MDT más fino que da el servicio del IGN es el de 5 m (el MDT02 no se puede descargar así). Cada celda toma la cota media del MDT que cae dentro de ella. Con «cada celda, un píxel del MDT» la rejilla llega a esos 5 m aunque la zona sea grande (hasta unos 3 millones de celdas; tarda más). Con celdas grandes se pierden pasos estrechos entre edificios y pueden salir balsas que no existen: por eso las sendas y aceras del casco se abren siempre entre los edificios.</li>
+          <li><b>¿Balsa real o inventada?</b> La vista «Hondonadas reales y retoques del terreno» y la información al pasar el dedo dicen en cada punto si el agua está en una hondonada del terreno real, si el modelo ha rebajado el terreno para darle salida o si lo ha subido un poco en un llano. Con «Hondonadas: terreno tal cual» no se retoca nada.</li>
+          <li><b>Llanos.</b> Donde el MDT da la misma cota en varias celdas seguidas, la calle real tiene una pendiente que el modelo no ve (las calles se hacen con al menos un 0,5 %). Se da a esos llanos una pendiente mínima del 0,3 % hacia su salida más baja, sin subir nunca el terreno más de 10 cm (menos que un bordillo), para que con muy poca agua ésta siga su camino. El agua que se muestra se mide siempre sobre el terreno real.</li>
           <li><b>Imbornales.</b> Además de los repartidos cada cierta distancia, que se colocan en el punto más bajo cercano de la calle, se pone uno en cada punto bajo de la calzada.</li>
           <li><b>Edificios.</b> Salen de OpenStreetMap y el agua los rodea. El agua de sus tejados va a la red o cae a la calle más cercana, según elijas.</li>
           <li><b>Suelo.</b> Absorción inicial: calzadas y edificios 0 mm/h, zona urbana 3, zona verde 15, cultivo 12, monte 25, arena 60, terreno sin clasificar 10. Baja a la cuarta parte cuando el suelo ha absorbido unos 40 mm.</li>
@@ -349,9 +351,9 @@ const DEM_MAXZ = 15, SAT_MAXZ = 18, TS = 256;
 
 /* Límites por nivel de resolución */
 const CALIDAD = {
-  normal:{tex:2048, demTiles:36,  satTiles:100,  mesh:320,  contour:1600, ign:700},
-  alta:  {tex:4096, demTiles:100, satTiles:300,  mesh:560,  contour:2400, ign:1400},
-  max:   {tex:8192, demTiles:196, satTiles:1100, mesh:900,  contour:3200, ign:2400}
+  normal:{tex:2048, demTiles:36,  satTiles:100,  mesh:320,  contour:1600, ign:1000},
+  alta:  {tex:4096, demTiles:100, satTiles:300,  mesh:560,  contour:2400, ign:2000},
+  max:   {tex:8192, demTiles:196, satTiles:1100, mesh:900,  contour:3200, ign:3000}
 };
 
 /* ---------- Utilidades Mercator ---------- */
@@ -470,7 +472,7 @@ const hAt=(u,v)=>hAtOf(dem,u,v);
 
 /* ---------- MDT del IGN (España) por WCS ---------- */
 const IGN_WCS='https://servicios.idee.es/wcs-inspire/mdt';
-const IGN_COV=[['Elevacion4258_2',2,'MDT02'],['Elevacion4258_5',5,'MDT05'],['Elevacion4258_25',25,'MDT25']];
+const IGN_COV=[['Elevacion4258_5',5,'MDT05'],['Elevacion4258_25',25,'MDT25']];   // el servicio WCS del IGN no ofrece el MDT02
 let ignCov=null; // cobertura que ha respondido bien
 const enEspana=b=>{const la=(b.north+b.south)/2,lo=(b.east+b.west)/2;
   return (la>35.9&&la<43.9&&lo>-9.5&&lo<4.4)||(la>27.5&&la<29.5&&lo>-18.3&&lo<-13.3)||(la>35.2&&la<36&&lo>-5.5&&lo<-2.8);};
@@ -1102,13 +1104,19 @@ function simPrepare(){
   if(!dem)return;
   imbUserAdd.clear();imbUserDel.clear();
   const nat=dem.wM/dem.W;
-  const cell=Math.max(nat,Math.max(dem.wM,dem.hM)/SP.det,1);
+  let cell=SP.det==='mdt'?Math.max(nat,1):Math.max(nat,Math.max(dem.wM,dem.hM)/SP.det,1);
+  // topes: memoria (unos 3 millones de celdas) y tamaño de textura de la tarjeta gráfica
+  cell=Math.max(cell,Math.sqrt(dem.wM*dem.hM/3e6),Math.max(dem.wM,dem.hM)/Math.min(4096,GPU_TEX));
   const Ws=Math.max(8,Math.round(dem.wM/cell)),Hs=Math.max(8,Math.round(dem.hM/cell)),N=Ws*Hs;
   const dx=Math.sqrt(dem.wM*dem.hM/N),A=dx*dx;
   const ras=rasterClasses(Ws,Hs,dx),cls=ras.cls;
   const z=new Float32Array(N),blk=new Uint8Array(N),nM=new Float32Array(N),inf0=new Float32Array(N);
+  // cota de cada celda: media del MDT dentro de ella (si la celda es mayor que el píxel, no se salta ninguno)
+  const kS=Math.min(5,Math.ceil(dx/nat-0.05));
+  const zCelda=kS<=1?(x,y)=>hAt((x+.5)/Ws,(y+.5)/Hs):(x,y)=>{let s=0;
+    for(let b=0;b<kS;b++)for(let a=0;a<kS;a++)s+=hAt((x+(a+.5)/kS)/Ws,(y+(b+.5)/kS)/Hs);return s/(kS*kS);};
   for(let y=0;y<Hs;y++)for(let x=0;x<Ws;x++){
-    const i=y*Ws+x;let zz=hAt((x+.5)/Ws,(y+.5)/Hs);
+    const i=y*Ws+x;let zz=zCelda(x,y);
     if(cls[i]===CL.DEF&&zz<0.1)cls[i]=CL.AGUA;            // mar
     if(cls[i]===CL.CALLE)zz-=0.12;                         // bordillo
     else if(cls[i]===CL.CUNETA||cls[i]===CL.CAUCE)zz-=ras.dep[i]; // cuneta o lecho del cauce
@@ -1119,9 +1127,10 @@ function simPrepare(){
   // Alcantarillas y cauces soterrados: unen dos puntos por debajo del terreno
   const pasos=crearPasos(Ws,Hs,dx,cls,blk,z,ras.cruces);
   // Hondonadas: cada celda busca su camino hacia el punto bajo más cercano con salida
-  const br=salidas(Ws,Hs,z,blk,cls,{c05:0.5,c1:1,c3:3}[SP.hond]||0,dx,pasos);
+  const br=salidas(Ws,Hs,z,blk,cls,{c05:0.5,c1:1,c3:3}[SP.hond]||0,dx,pasos,SP.hond!=='nada');
   for(const P of br.pasos){const [la,lo]=uvToLatLon(((P.a%Ws+P.b%Ws)/2+.5)/Ws,(((P.a/Ws)|0)/2+((P.b/Ws)|0)/2+.5)/Hs);P.ll=[la,lo];pasos.push(P);}
   acabarPasos(pasos,Ws,Hs,cls,blk,z0);
+  const hondo=depresiones(Ws,Hs,z0,blk,cls,pasos);
   for(let i=0;i<N;i++){
     if(br.carved[i]&&nM[i]<0.05)nM[i]=0.05;                  // por esos pasos el agua va más lenta
     if(!blk[i]&&!br.vis[i]){cls[i]=CL.PATIO;blk[i]=1;}       // patios cerrados: desaguan como los tejados
@@ -1142,7 +1151,7 @@ function simPrepare(){
   let urb=0;for(let i=0;i<N;i++)if(cls[i]===CL.URB||cls[i]===CL.CALLE||cls[i]===CL.EDIF||cls[i]===CL.PATIO)urb++;
   S={Ws,Hs,N,dx,A,cls,z,z0,blk,br,dep:ras.dep,nM,inf0,roofCount,nRoof,urbArea:urb*A,
      d:new Float32Array(N),maxV:new Float32Array(N),maxDV:new Float32Array(N),qx:new Float32Array((Ws-1)*Hs),qy:new Float32Array(Ws*(Hs-1)),qxo:new Float32Array((Ws-1)*Hs),qyo:new Float32Array(Ws*(Hs-1)),outV:new Float32Array(N),maxD:new Float32Array(N),flux:new Float32Array(N),cum:new Float32Array(N),
-     acc:null,imb:[],pasos,t:0,dt:1,hist:[],crit:[],tex:new Uint8Array(N*4)};
+     acc:null,imb:[],pasos,hondo,t:0,dt:1,hist:[],crit:[],tex:new Uint8Array(N*4)};
   // Mar: agua a baja cota (<1,5 m) — su nivel lo fija la marea
   S.mar=new Uint8Array(N);let nMar=0;
   for(let i=0;i<N;i++)if(cls[i]===CL.AGUA&&z0[i]<1.5){S.mar[i]=1;nMar++;}
@@ -1162,7 +1171,7 @@ function simPrepare(){
   drawImbPoints();drawEntradas();drawPasos();drawCrit();$('criticos').innerHTML='';refreshEdif();listaEdif();$('critTit').hidden=true;
   $('simPlay').disabled=false;$('simReset').disabled=false;
   paintWater();simStats();drawChart();leyenda();
-  estado(`Lista · rejilla ${Ws}×${Hs} de ${fmt(dx,1)} m`+(br.nPozos?` · ${br.nPozos} hondonadas con salida`:'')+(pasos.length?` · ${pasos.length} alcantarillas y pasos`:'')+(br.nLlano*dx*dx>=500?` · ${fmt(br.nLlano*dx*dx/1e4,1)} ha de llano con pendiente mínima`:''));
+  estado(`Lista · rejilla ${Ws}×${Hs} de ${fmt(dx,1)} m (${fmt(N/1e6,N<1e6?2:1)} millones de celdas; el MDT tiene ${fmt(nat,1)} m)`+(br.nPozos?` · ${br.nPozos} hondonadas con salida`:'')+(pasos.length?` · ${pasos.length} alcantarillas y pasos`:'')+(br.nLlano*dx*dx>=500?` · ${fmt(br.nLlano*dx*dx/1e4,1)} ha de llano con pendiente mínima`:''));
 }
 function simResetState(){
   if(!S)return;
@@ -1560,8 +1569,8 @@ function listaEdif(){
    tenga pendiente hasta la salida (como un paso bajo la calzada o una cuneta). Si haría falta
    cortar más de MAX_CORTE metros, la hondonada se respeta y se llena como una balsa.
    Las celdas a las que no se llega sin atravesar edificios son patios cerrados. */
-const MAX_CORTE=3,EPS_Z=0.0005,PEND_MIN=0.005,PEND_LLANO=0.003,MAX_RELLENO=0.3;
-function salidas(Ws,Hs,z,blk,cls,maxCorte,dxS,links){
+const MAX_CORTE=3,EPS_Z=0.0005,PEND_MIN=0.005,PEND_LLANO=0.003,MAX_RELLENO=0.1;   // como mucho 10 cm: menos que un bordillo
+function salidas(Ws,Hs,z,blk,cls,maxCorte,dxS,links,llano=true){
   // las alcantarillas comunican sus dos extremos sin rebajar el terreno entre ellos
   const ady=new Map(),pasos=[];
   for(const P of links||[]){for(const [i,j] of [[P.a,P.b],[P.b,P.a]]){if(!ady.has(i))ady.set(i,[]);ady.get(i).push(j);}}
@@ -1604,9 +1613,9 @@ function salidas(Ws,Hs,z,blk,cls,maxCorte,dxS,links){
         }else push(n,z[c]);
       }else{
         // Llano: el MDT no recoge la pendiente de urbanización de las calles (≥0,5 %).
-        // Se da una pendiente mínima hacia la salida, sin subir el terreno más de 30 cm en total,
+        // Se da una pendiente mínima hacia la salida, sin subir el terreno más de 10 cm en total,
         // para que con muy poca agua ésta siga su camino hacia el punto más bajo.
-        if(PEND_LLANO>0){
+        if(llano&&PEND_LLANO>0){
           const need=z[c]+PEND_LLANO*dxS;
           if(z[n]<need){
             if(need-z[n]<=MAX_RELLENO){rise[n]=need-z[n];z[n]=need;nLlano++;}
@@ -1711,6 +1720,27 @@ function refreshPasos(){
   S.pasos.forEach((P,k)=>{const c=paso2D[k],st=pasoEstado(P);if(c&&c._st!==st){c._st=st;c.setStyle({fillColor:PASO_COL[st]});}});
 }
 
+const detalle=v=>v==='mdt'?'mdt':+v;
+/* Hondonadas del terreno real (antes de cualquier retoque): cuánto se llenaría cada celda hasta
+   que el agua encontrara salida por el borde, el mar, un embalse o una alcantarilla */
+function depresiones(Ws,Hs,z0,blk,cls,pasos){
+  const N=Ws*Hs,fill=Float32Array.from(z0),vis=new Uint8Array(N),hi=new Int32Array(N),hk=new Float32Array(N);let hn=0;
+  const push=(i,k)=>{let c=hn++;while(c>0){const p=(c-1)>>1;if(hk[p]<=k)break;hi[c]=hi[p];hk[c]=hk[p];c=p;}hi[c]=i;hk[c]=k;};
+  const pop=()=>{const r=hi[0],li=hi[--hn],lk=hk[hn];let c=0;
+    for(;;){let m=2*c+1;if(m>=hn)break;if(m+1<hn&&hk[m+1]<hk[m])m++;if(hk[m]>=lk)break;hi[c]=hi[m];hk[c]=hk[m];c=m;}hi[c]=li;hk[c]=lk;return r;};
+  const ady=new Map();for(const P of pasos||[])for(const [i,j] of [[P.a,P.b],[P.b,P.a]]){if(!ady.has(i))ady.set(i,[]);ady.get(i).push(j);}
+  for(let y=0;y<Hs;y++)for(let x=0;x<Ws;x++){const i=y*Ws+x;if(blk[i])continue;
+    if(x===0||y===0||x===Ws-1||y===Hs-1||cls[i]===CL.AGUA){vis[i]=1;push(i,z0[i]);}}
+  while(hn){
+    const c=pop(),k=fill[c],x=c%Ws,y=(c/Ws)|0;
+    const vec=[x<Ws-1?c+1:-1,x>0?c-1:-1,y<Hs-1?c+Ws:-1,y>0?c-Ws:-1];
+    for(const n of vec){if(n<0||vis[n]||blk[n])continue;vis[n]=1;fill[n]=z0[n]>k?z0[n]:k;push(n,fill[n]);}
+    const lk=ady.get(c);if(lk)for(const n of lk){if(vis[n]||blk[n])continue;vis[n]=1;fill[n]=z0[n];push(n,fill[n]);}
+  }
+  for(let i=0;i<N;i++)fill[i]=vis[i]?fill[i]-z0[i]:0;
+  return fill;
+}
+
 /* Pinta cada uso del suelo en una rejilla del tamaño de la simulación */
 function rasterClasses(Ws,Hs,dx){
   const N=Ws*Hs,cls=new Uint8Array(N),dep=new Float32Array(N);
@@ -1738,8 +1768,12 @@ function rasterClasses(Ws,Hs,dx){
   if(landData)for(const it of landData.items)if(!it.tun)layers.push(it);   // los cauces soterrados no se pintan: pasan por debajo
   // Cada vía se trocea cada ~20 m: dentro del pueblo es calle (bordillo e imbornales), fuera es carretera (cunetas)
   for(const st of streets){
-    if(st.tipo.cls==='todas')continue;
-    if(st.puente||st.tunel){st.urbana=false;continue;}   // puentes y túneles: el agua pasa por debajo o por encima
+    if(st.puente||st.tunel){st.urbana=false;continue;}
+    if(st.tipo.cls==='todas'){
+      // sendas, aceras y escaleras del casco: el agua pasa por ellas aunque la rejilla junte los edificios de los lados
+      if(urb&&st.ll.some(p=>urbanoEn(p,st)))layers.push({c:CL.URB,line:true,w:st.tipo.w,rings:[st.ll],ord:PAINT_ORDER[CL.EDIF]+0.2});
+      continue;
+    }   // puentes y túneles: el agua pasa por debajo o por encima
     const tramos=[];let cur=null;
     for(let k=0;k<st.ll.length-1;k++){
       const a=st.ll[k],b=st.ll[k+1];
@@ -1761,12 +1795,13 @@ function rasterClasses(Ws,Hs,dx){
     }
     st.urbana=tramos.some(t=>t.u);
   }
-  layers.sort((a,b)=>PAINT_ORDER[a.c]+(a.line?.5:0)-(PAINT_ORDER[b.c]+(b.line?.5:0)));
+  const ordDe=L=>(L.ord!=null?L.ord:PAINT_ORDER[L.c])+(L.line?.5:0);
+  layers.sort((a,b)=>ordDe(a)-ordDe(b));
   // Donde un cauce cruza una vía sin puente, la vía va en terraplén sobre una alcantarilla: se repinta
   // la vía encima del cauce para que el terraplén siga ahí (el agua pasará por encima si sube mucho)
   const cruces=crucesCauceVia(dx,urbanoEn);
   for(const c of cruces)layers.push({c:c.urb?CL.CALLE:CL.CARR,line:true,w:c.w,rings:[c.tramo]});
-  let cur=-1,curLine=null,curDep=0;
+  let cur=-1,curLine=null,curDep=0,curOrd;
   const flush=()=>{
     if(cur<0)return;
     const id=g.getImageData(0,0,Ws,Hs).data;
@@ -1774,7 +1809,7 @@ function rasterClasses(Ws,Hs,dx){
   };
   for(const L of layers){
     const d0=L.dep||0;
-    if(L.c!==cur||L.line!==curLine||d0!==curDep){flush();g.clearRect(0,0,Ws,Hs);cur=L.c;curLine=L.line;curDep=d0;}
+    if(L.c!==cur||L.line!==curLine||d0!==curDep||L.ord!==curOrd){curOrd=L.ord;flush();g.clearRect(0,0,Ws,Hs);cur=L.c;curLine=L.line;curDep=d0;}
     g.fillStyle=g.strokeStyle='#fff';g.lineCap=g.lineJoin='round';
     for(const r of L.rings){
       if(r.length<2)continue;
@@ -2128,6 +2163,18 @@ function paintWater(){
     src=S.flux;R=RAMP_F;let mx=0;for(let i=0;i<S.N;i++)if(cls[i]!==CL.AGUA&&src[i]>mx)mx=src[i];
     const lm=Math.log10(1+mx*S.A);norm=v=>lm>0?Math.log10(1+v*S.A)/lm:0;
   }
+  else if(mode==='ret'){
+    // rojo: el modelo rebaja el terreno (paso supuesto) · azul claro: lo sube (pendiente mínima) · violeta: hondonada real
+    const {z,z0,hondo}=S;
+    for(let y=0;y<Hs;y++){const row=(Hs-1-y)*Ws;for(let x=0;x<Ws;x++){
+      const i=y*Ws+x,o=(row+x)*4,dz=z[i]-z0[i],h=hondo[i];let c=null;
+      if(dz<-0.01)c=[217,52,43,Math.min(235,90+Math.round(-dz*300))];
+      else if(h>0.03)c=[110,40,170,Math.min(235,70+Math.round(h*250))];
+      else if(dz>0.01)c=[40,190,230,Math.min(220,60+Math.round(dz*900))];
+      if(!c||cls[i]===CL.AGUA){tex[o+3]=0;continue;}
+      tex[o]=c[0];tex[o+1]=c[1];tex[o+2]=c[2];tex[o+3]=c[3];}}
+    waterTex.needsUpdate=true;return;
+  }
   else if(mode==='pel'){
     const {maxD,maxV,maxDV}=S;
     for(let y=0;y<Hs;y++){const row=(Hs-1-y)*Ws;for(let x=0;x<Ws;x++){
@@ -2168,6 +2215,8 @@ function leyenda(){
   if(m==='d'||m==='max')L.innerHTML=`<span>1 cm</span><span class="ramp" style="background:${g(RAMP_D.slice(1))}"></span><span>1 m o más de agua</span>`;
   else if(m==='flux')L.innerHTML=`<span>poca</span><span class="ramp" style="background:${g(RAMP_F.slice(1))}"></span><span>mucha agua ha pasado por aquí</span>`;
   else if(m==='pel')L.innerHTML=[1,2,3].map(k=>`<span><span style="display:inline-block;width:12px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px;background:rgba(${PEL_COL[k].slice(0,3).join(',')},.9)"></span>${PEL_TXT[k]}</span>`).join('');
+  else if(m==='ret')L.innerHTML=[['110,40,170','hondonada real del terreno: ahí el agua se queda'],['217,52,43','el modelo rebaja el terreno (paso supuesto)'],['40,190,230','el modelo lo sube un poco (pendiente mínima en llano)']]
+    .map(([c,t])=>`<span><span style="display:inline-block;width:12px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px;background:rgba(${c},.9)"></span>${t}</span>`).join('');
   else if(m==='acc')L.innerHTML=`<span>solo su lluvia</span><span class="ramp" style="background:${g(RAMP_A.slice(1))}"></span><span>recoge el agua de mucha superficie</span>`;
   else L.innerHTML='';
 }
@@ -2312,6 +2361,11 @@ function simTip(u,v){
   if(S.maxD[i]>0.005&&SP.ver==='max')s+=` · máx. ${fmt(S.maxD[i]*100,0)} cm`;
   if(S.maxV[i]>0.05&&(SP.ver==='pel'||SP.ver==='max'))s+=`<br>velocidad máx. ${fmt(S.maxV[i],1)} m/s · ${PEL_TXT[peligro(S.maxD[i],S.maxV[i],S.maxDV[i])]}`;
   if(SP.ver==='acc'&&S.acc)s+=` · recoge de ${S.acc[i]<1e4?fmt(S.acc[i],0)+' m²':fmt(S.acc[i]/1e4,2)+' ha'}`;
+  // ¿el agua de aquí es por el terreno real o por un retoque del modelo?
+  const dz=S.z[i]-S.z0[i];
+  if(dz<-0.01)s+=`<br>terreno rebajado ${fmt(-dz*100,0)} cm por el modelo: paso supuesto hacia la salida`;
+  else if(S.hondo[i]>0.03)s+=`<br>hondonada del terreno real: se llena hasta ${fmt(S.hondo[i]*100,0)} cm antes de desaguar`;
+  else if(dz>0.01)s+=`<br>terreno subido ${fmt(dz*100,0)} cm por el modelo: pendiente mínima en llano`;
   return s;
 }
 
@@ -2883,8 +2937,8 @@ $('sHond').addEventListener('change',e=>{SP.hond=e.target.value;if(dem){busy('Pr
 $('sVel').addEventListener('change',e=>{SP.vel=+e.target.value;});
 $('sVer').addEventListener('change',e=>{SP.ver=e.target.value;leyenda();paintWater();});
 $('sImbV').addEventListener('change',()=>{const v=imbVisible();if(imbPoints)imbPoints.visible=v;imbLayer.clearLayers();if(v)imb2D.forEach(c=>c.addTo(imbLayer));});
-$('sDet').addEventListener('change',e=>{SP.det=+e.target.value;if(dem){busy('Preparando la simulación de lluvia…',null);nextFrame().then(()=>{simPrepare();busy('');});}});
-SP.hond=$('sHond').value;SP.ext=$('sExt').value;SP.carr=$('sCarr').value;SP.forma=$('sForma').value;SP.tej=$('sTej').value;SP.vel=+$('sVel').value;SP.ver=$('sVer').value;SP.det=+$('sDet').value;
+$('sDet').addEventListener('change',e=>{SP.det=detalle(e.target.value);if(dem){busy('Preparando la simulación de lluvia…',null);nextFrame().then(()=>{simPrepare();busy('');});}});
+SP.hond=$('sHond').value;SP.ext=$('sExt').value;SP.carr=$('sCarr').value;SP.forma=$('sForma').value;SP.tej=$('sTej').value;SP.vel=+$('sVel').value;SP.ver=$('sVer').value;SP.det=detalle($('sDet').value);
 leyenda();drawChart();
 </script>
 <script>
